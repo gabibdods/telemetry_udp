@@ -104,6 +104,4 @@ As a motorsport enthusiast, I wanted to **track and analyze** my performance dur
 
 ---
 
-> **Author:** [Your Name]  
-> **License:** MIT or other open source license  
 > **Note:** This system is for educational and training purposes. It is not affiliated with FIA, WEC, or Codemasters F1.
