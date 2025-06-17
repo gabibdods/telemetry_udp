@@ -1,0 +1,80 @@
+services:
+  listener:
+    build:
+      context: ./Telemtry
+    ports:
+      - "20777:20777/udp"
+    depends_on:
+      - db
+    restart: always
+
+  web:
+    build: ./Telemtry_php
+    ports:
+      - "8080:80"
+    depends_on:
+      - db
+    restart: always
+
+  db:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: telemetry
+      MYSQL_USER: user
+      MYSQL_PASSWORD: pass
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "3306:3306"
+    restart: always
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin:latest
+    ports:
+      - "8081:80"
+    environment:
+      PMA_HOST: db
+      PMA_USER: root
+      PMA_PASSWORD: rootpass
+    depends_on:
+      - db
+    restart: always
+      
+  websocket:
+    build: ./websocket
+    ports:
+      - "3000:3000"
+    depends_on:
+      - db
+    restart: always
+    
+  udp-tester:
+    build: ./UDPTester
+    depends_on:
+      - listener
+    restart: always
+    
+  flyway:
+    image: flyway/flyway:latest
+    command: migrate
+    depends_on:
+      - db
+    volumes:
+      - ./flyway/sql:/flyway/sql
+      - ./flyway/conf/flyway.conf:/flyway/conf/flyway.conf
+    restart: always
+  
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana-storage:/var/lib/grafana
+    depends_on:
+      - db
+    restart: always
+    
+volumes:
+  grafana-storage:

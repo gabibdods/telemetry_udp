@@ -1,0 +1,1787 @@
+using Microsoft.EntityFrameworkCore.Metadata.Conventions;
+using MySqlConnector;
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Sockets;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using static System.Runtime.InteropServices.JavaScript.JSType;
+namespace Telemtry
+{
+    public class Worker : BackgroundService
+    {
+        private readonly ConcurrentQueue<PacketMotionData> _packetMotionDataQueue = new();
+        private readonly ConcurrentQueue<PacketSessionData> _packetSessionDataQueue = new();
+        private readonly ConcurrentQueue<PacketLapData> _packetLapDataQueue = new();
+        private readonly ConcurrentQueue<PacketEventData> _packetEventDataQueue = new();
+        private readonly ConcurrentQueue<PacketParticipantsData> _packetParticipantsDataQueue = new();
+        private readonly ConcurrentQueue<PacketCarSetupData> _packetCarSetupDataQueue = new();
+        private readonly ConcurrentQueue<PacketCarTelemetryData> _packetCarTelemetryDataQueue = new();
+        private readonly ConcurrentQueue<PacketCarStatusData> _packetCarStatusDataQueue = new();
+        private readonly ConcurrentQueue<PacketFinalClassificationData> _packetFinalClassificationDataQueue = new();
+        private readonly ConcurrentQueue<PacketLobbyInfoData> _packetLobbyInfoDataQueue = new();
+        private readonly ConcurrentQueue<PacketCarDamageData> _packetCarDamageDataQueue = new();
+        private readonly ConcurrentQueue<PacketSessionHistoryData> _packetSessionHistoryDataQueue = new();
+        private readonly ConcurrentQueue<PacketTyreSetsData> _packetTyreSetsDataQueue = new();
+        private readonly ConcurrentQueue<PacketMotionExData> _packetMotionExDataQueue = new();
+        private readonly ConcurrentQueue<PacketTimeTrialData> _packetTimeTrialDataQueue = new();
+        private readonly ConcurrentQueue<CarTelemetryData> _packetPlayerCarTelemetryDataQueue = new();                      //turn this off
+        private readonly string _connectionString = "Server=db;Port=3306;Database=telemetry;User=user;Password=pass;";
+        private readonly Dictionary<byte, int> _packetSizes = new()
+        {
+            { 0, 1349 },                //PacketMotionData
+            { 1, 753 },                 //PacketSessionData
+            { 2, 1285 },                //PacketLapData
+            { 3, 45 },                  //PacketEventData
+            { 4, 1350 },                //PacketParticipantsData
+            { 5, 1133 },                //PacketCarSetupData
+            { 6, 1352 },                //PacketCarTelemetryData
+            { 7, 1239 },                //PacketCarStatusData
+            { 8, 1020 },                //PacketFinalClassificationData
+            { 9, 1306 },                //PacketLobbyInfoData
+            { 10, 953 },                //PacketCarDamageData
+            { 11, 1460 },               //PacketSessionHistoryData
+            { 12, 231 },                //PacketTyreSetsData
+            { 13, 237 },                //PacketMotionExData
+            { 14, 101 },                //PacketTimeTrialData
+        };
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            using var client = new UdpClient(20777);
+            _ = Task.Run(() => ProcessQueueAsync(stoppingToken), CancellationToken.None);
+
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                UdpReceiveResult result = await client.ReceiveAsync(CancellationToken.None);
+                using var ms = new MemoryStream(result.Buffer);
+                using var br = new BinaryReader(ms);
+                    
+                PacketHeader ph = ReadPacketHeader(br);
+
+                if (_packetSizes.TryGetValue(ph.packetId, out int expectedSize) && result.Buffer.Length == expectedSize)
+                {
+                    switch (ph.packetId)
+                    {
+                        case 0: //PacketMotionData
+                            PacketMotionData packetMotionData = new();
+                            packetMotionData = ReadPacketMotionData(br);
+                            _packetMotionDataQueue.Enqueue(packetMotionData);
+                            break;
+                        case 1: //PacketSessionData
+                            PacketSessionData packetSessionData = new();
+                            packetSessionData = ReadPacketSessionData(br);
+                            _packetSessionDataQueue.Enqueue(packetSessionData);
+                            break;
+                        case 2: //PacketLapData
+                            PacketLapData packetLapData = new();
+                            packetLapData = ReadPacketLapData(br);
+                            _packetLapDataQueue.Enqueue(packetLapData);
+                            break;
+                        case 3: //PacketEventData
+                            PacketEventData packetEventData = new();
+                            packetEventData = ReadPacketEventData(br);
+                            _packetEventDataQueue.Enqueue(packetEventData);
+                            break;
+                        case 4: //PacketParticipantsData
+                            PacketParticipantsData packetParticipantsData = new();
+                            packetParticipantsData = ReadPacketParticipantsData(br);
+                            _packetParticipantsDataQueue.Enqueue(packetParticipantsData);
+                            break;
+                        case 5: //PacketCarSetupData
+                            PacketCarSetupData packetCarSetupData = new();
+                            packetCarSetupData = ReadPacketCarSetupData(br);
+                            _packetCarSetupDataQueue.Enqueue(packetCarSetupData);
+                            break;
+                        case 6: //PacketCarTelemetryData
+                            PacketCarTelemetryData packetCarTelemetryData = new();
+                            packetCarTelemetryData = ReadPacketCarTelemetryData(br);
+                            _packetCarTelemetryDataQueue.Enqueue(packetCarTelemetryData);
+                            _packetPlayerCarTelemetryDataQueue.Enqueue(packetCarTelemetryData.carTelemetryData[ph.playerCarIndex]);
+                            break;
+                        case 7: //PacketCarStatusData
+                            PacketCarStatusData packetCarStatusData = new();
+                            packetCarStatusData = ReadPacketCarStatusData(br);
+                            _packetCarStatusDataQueue.Enqueue(packetCarStatusData);
+                            break;
+                        case 8: //PacketFinalClassificationData
+                            PacketFinalClassificationData packetFinalClassificationData = new();
+                            packetFinalClassificationData = ReadPacketFinalClassificationData(br);
+                            _packetFinalClassificationDataQueue.Enqueue(packetFinalClassificationData);
+                            break;
+                        case 9: //PacketLobbyInfoData
+                            PacketLobbyInfoData packetLobbyInfoData = new();
+                            packetLobbyInfoData = ReadPacketLobbyInfoData(br);
+                            _packetLobbyInfoDataQueue.Enqueue(packetLobbyInfoData);
+                            break;
+                        case 10: //PacketCarDamageData
+                            PacketCarDamageData packetCarDamageData = new();
+                            packetCarDamageData = ReadPacketCarDamageData(br);
+                            _packetCarDamageDataQueue.Enqueue(packetCarDamageData);
+                            break;
+                        case 11: //PacketSessionHistoryData
+                            PacketSessionHistoryData packetSessionHistoryData = new();
+                            packetSessionHistoryData = ReadPacketSessionHistoryData(br);
+                            _packetSessionHistoryDataQueue.Enqueue(packetSessionHistoryData);
+                            break;
+                        case 12: //PacketTyreSetsData
+                            PacketTyreSetsData packetTyreSetsData = new();
+                            packetTyreSetsData = ReadPacketTyreSetsData(br);
+                            _packetTyreSetsDataQueue.Enqueue(packetTyreSetsData);
+                            break;
+                        case 13: //PacketMotionExData
+                            PacketMotionExData packetMotionExData = new();
+                            packetMotionExData = ReadPacketMotionExData(br);
+                            _packetMotionExDataQueue.Enqueue(packetMotionExData);
+                            break;
+                        case 14: //PacketTimeTrialData
+                            PacketTimeTrialData packetTimeTrialData = new();
+                            packetTimeTrialData = ReadPacketTimeTrialData(br);
+                            _packetTimeTrialDataQueue.Enqueue(packetTimeTrialData);
+                            break;
+                        default:
+                            break; //Deformed Packets
+                    }
+                }
+            }
+        }
+//Queuings-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        private async Task ProcessQueueAsync(CancellationToken stoppingToken)
+        {
+            List<CarMotionData> carMotionDataBatch = [];
+            List<PacketSessionData> _packetSessionDataBatch = [];
+            List<PacketLapData> _packetLapDataBatch = [];
+            List<PacketEventData> _packetEventDataBatch = [];
+            List<PacketParticipantsData> _packetParticipantsDataBatch = [];             //find limit
+            List<CarSetupData> _carSetupDataBatch = [];
+            List<CarTelemetryData> carTelemetryDataBatch = [];
+            List<CarStatusData> _carStatusDataBatch = [];
+            List<FinalClassificationData> _finalClassificationDataBatch = [];           //find limit
+            List<LobbyInfoData> _lobbyInfoDataBatch = [];                               //find limit
+            List<CarDamageData> _carDamageDataBatch = [];
+            List<PacketSessionHistoryData> _packetSessionHistoryDataBatch = [];
+            List<PacketTyreSetsData> _packetTyreSetsDataBatch = [];
+            List<PacketMotionExData> _packetMotionExDataBatch = [];
+            List<PacketTimeTrialData> _packetTimeTrialDataBatch = [];
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                while (_packetPlayerCarTelemetryDataQueue.TryDequeue(out var carTelemetryDataQueueItem))
+                {
+                    carTelemetryDataBatch.Add(carTelemetryDataQueueItem);
+                    if (carTelemetryDataBatch.Count >= 10)
+                        break;
+                }
+                if (carTelemetryDataBatch.Count > 0)
+                {
+                    try
+                    {
+                        using var conn = new MySqlConnection(_connectionString);
+                        await conn.OpenAsync(stoppingToken);
+                        foreach (var carTelemetryDataBatchItem in carTelemetryDataBatch)
+                        {
+                            using var cmd = CreateInsertCommandCarTelemetryData(conn, carTelemetryDataBatchItem);
+                            await cmd.ExecuteNonQueryAsync(stoppingToken);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"MySQL Batch Insert Error: {ex.Message}");
+                    }
+                    carTelemetryDataBatch.Clear();
+                }
+                await Task.Delay(10, stoppingToken);
+            }
+        }
+//Readers------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        private static PacketHeader ReadPacketHeader(BinaryReader br)
+        {
+            PacketHeader packetHeader = new();
+            try
+            {
+                packetHeader.packetFormat = br.ReadUInt16();
+                packetHeader.gameYear = br.ReadByte();
+                packetHeader.gameMajorVersion = br.ReadByte();
+                packetHeader.gameMinorVersion = br.ReadByte();
+                packetHeader.packetVersion = br.ReadByte();
+                packetHeader.packetId = br.ReadByte();
+                packetHeader.sessionUID = br.ReadUInt64();
+                packetHeader.sessionTime = br.ReadSingle();
+                packetHeader.frameIdentifier = br.ReadUInt32();
+                packetHeader.overallFrameIdentifier = br.ReadUInt32();
+                packetHeader.playerCarIndex = br.ReadByte();
+                packetHeader.secondaryPlayerCarIndex = br.ReadByte();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete PacketHeader packet. Skipping...");
+            }
+            return packetHeader;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        private static CarMotionData ReadCarMotionData(BinaryReader br)
+        {
+            CarMotionData carMotionData = new();
+            try
+            {
+                carMotionData.worldPositionX = br.ReadSingle();
+                carMotionData.worldPositionY = br.ReadSingle();
+                carMotionData.worldPositionZ = br.ReadSingle();
+                carMotionData.worldVelocityX = br.ReadSingle();
+                carMotionData.worldVelocityY = br.ReadSingle();
+                carMotionData.worldVelocityZ = br.ReadSingle();
+                carMotionData.worldForwardDirX = br.ReadInt16();
+                carMotionData.worldForwardDirY = br.ReadInt16();
+                carMotionData.worldForwardDirZ = br.ReadInt16();
+                carMotionData.worldRightDirX = br.ReadInt16();
+                carMotionData.worldRightDirY = br.ReadInt16();
+                carMotionData.worldRightDirZ = br.ReadInt16();
+                carMotionData.gForceLateral = br.ReadSingle();
+                carMotionData.gForceLongitudinal = br.ReadSingle();
+                carMotionData.gForceVertical = br.ReadSingle();
+                carMotionData.yaw = br.ReadSingle();
+                carMotionData.pitch = br.ReadSingle();
+                carMotionData.roll = br.ReadSingle();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete CarMotionData packet. Skipping...");
+            }
+            return carMotionData;
+        }
+        private static PacketMotionData ReadPacketMotionData(BinaryReader br)
+        {//id=0, Packets sent on Frame 1, Packets sent on Frame 2, Packets sent on Frame 31
+            PacketMotionData packetMotionData = new();
+            try
+            {
+                packetMotionData.header = ReadPacketHeader(br);
+                packetMotionData.carMotionData = new CarMotionData[22];
+                for (int i = 0; i < 22; i++) packetMotionData.carMotionData[i] = ReadCarMotionData(br);
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete PacketMotionData packet. Skipping...");
+            }
+            return packetMotionData;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        private static MarshalZone ReadMarshalZone(BinaryReader br)
+        {
+            MarshalZone marshalZone = new();
+            try
+            {
+                marshalZone.zoneStart = br.ReadSingle();
+                marshalZone.zoneFlag = br.ReadSByte();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete MarshalZone packet. Skipping...");
+            }
+            return marshalZone;
+        }
+        private static WeatherForecastSample ReadWeatherForecastSample(BinaryReader br)
+        {
+            WeatherForecastSample weatherForecastSample = new();
+            try
+            {
+                weatherForecastSample.sessionType = br.ReadByte();
+                weatherForecastSample.timeOffset = br.ReadByte();
+                weatherForecastSample.weather = br.ReadByte();
+                weatherForecastSample.trackTemperature = br.ReadSByte();
+                weatherForecastSample.trackTemperatureChange = br.ReadSByte();
+                weatherForecastSample.airTemperature = br.ReadSByte();
+                weatherForecastSample.airTemperatureChange = br.ReadSByte();
+                weatherForecastSample.rainPercentage = br.ReadByte();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete WeatherForecastSample packet. Skipping...");
+            }
+            return weatherForecastSample;
+        }
+        private static PacketSessionData ReadPacketSessionData(BinaryReader br)
+        {//id=1, Packets sent on Frame 1, Packets sent on Frame 31
+            PacketSessionData packetSessionData = new();
+            try
+            {
+                packetSessionData.header = ReadPacketHeader(br);
+                packetSessionData.weather = br.ReadByte();
+                packetSessionData.trackTemperature = br.ReadSByte();
+                packetSessionData.airTemperature = br.ReadSByte();
+                packetSessionData.totalLaps = br.ReadByte();
+                packetSessionData.trackLength = br.ReadUInt16();
+                packetSessionData.sessionType = br.ReadByte();
+                packetSessionData.trackId = br.ReadSByte();
+                packetSessionData.formula = br.ReadByte();
+                packetSessionData.sessionTimeLeft = br.ReadUInt16();
+                packetSessionData.sessionDuration = br.ReadUInt16();
+                packetSessionData.pitSpeedLimit = br.ReadByte();
+                packetSessionData.gamePaused = br.ReadByte();
+                packetSessionData.isSpectating = br.ReadByte();
+                packetSessionData.spectatorCarIndex = br.ReadByte();
+                packetSessionData.sliProNativeSupport = br.ReadByte();
+                packetSessionData.numMarshalZones = br.ReadByte();
+                packetSessionData.marshalZones = new MarshalZone[21];
+                for (int i = 0; i < 21; i++) packetSessionData.marshalZones[i] = ReadMarshalZone(br);
+                packetSessionData.safetyCarStatus = br.ReadByte();
+                packetSessionData.networkGame = br.ReadByte();
+                packetSessionData.numWeatherForecastSamples = br.ReadByte();
+                packetSessionData.weatherForecastSamples = new WeatherForecastSample[64];
+                for (int i = 0; i < 64; i++) packetSessionData.weatherForecastSamples[i] = ReadWeatherForecastSample(br);
+                packetSessionData.forecastAccuracy = br.ReadByte();
+                packetSessionData.aiDifficulty = br.ReadByte();
+                packetSessionData.seasonLinkIdentifier = br.ReadUInt32();
+                packetSessionData.weekendLinkIdentifier = br.ReadUInt32();
+                packetSessionData.sessionLinkIdentifier = br.ReadUInt32();
+                packetSessionData.pitStopWindowIdealLap = br.ReadByte();
+                packetSessionData.pitStopWindowLatestLap = br.ReadByte();
+                packetSessionData.pitStopRejoinPosition = br.ReadByte();
+                packetSessionData.steeringAssist = br.ReadByte();
+                packetSessionData.brakingAssist = br.ReadByte();
+                packetSessionData.gearboxAssist = br.ReadByte();
+                packetSessionData.pitAssist = br.ReadByte();
+                packetSessionData.pitReleaseAssist = br.ReadByte();
+                packetSessionData.ERSAssist = br.ReadByte();
+                packetSessionData.DRSAssist = br.ReadByte();
+                packetSessionData.dynamicRacingLine = br.ReadByte();
+                packetSessionData.dynamicRacingLineType = br.ReadByte();
+                packetSessionData.gameMode = br.ReadByte();
+                packetSessionData.ruleSet = br.ReadByte();
+                packetSessionData.timeOfDay = br.ReadUInt32();
+                packetSessionData.sessionLength = br.ReadByte();
+                packetSessionData.speedUnitsLeadPlayer = br.ReadByte();
+                packetSessionData.temperatureUnitsLeadPlayer = br.ReadByte();
+                packetSessionData.speedUnitsSecondaryPlayer = br.ReadByte();
+                packetSessionData.temperatureUnitsSecondaryPlayer = br.ReadByte();
+                packetSessionData.numSafetyCarPeriods = br.ReadByte();
+                packetSessionData.numVirtualSafetyCarPeriods = br.ReadByte();
+                packetSessionData.numRedFlagPeriods = br.ReadByte();
+                packetSessionData.equalCarPerformance = br.ReadByte();
+                packetSessionData.recoveryMode = br.ReadByte();
+                packetSessionData.flashbackLimit = br.ReadByte();
+                packetSessionData.surfaceType = br.ReadByte();
+                packetSessionData.lowFuelMode = br.ReadByte();
+                packetSessionData.raceStarts = br.ReadByte();
+                packetSessionData.tyreTemperature = br.ReadByte();
+                packetSessionData.pitLaneTyreSim = br.ReadByte();
+                packetSessionData.carDamage = br.ReadByte();
+                packetSessionData.carDamageRate = br.ReadByte();
+                packetSessionData.collisions = br.ReadByte();
+                packetSessionData.collisionsOffForFirstLapOnly = br.ReadByte();
+                packetSessionData.mpUnsafePitRelease = br.ReadByte();
+                packetSessionData.mpOffForGriefing = br.ReadByte();
+                packetSessionData.cornerCuttingStringency = br.ReadByte();
+                packetSessionData.parcFermeRules = br.ReadByte();
+                packetSessionData.pitStopExperience = br.ReadByte();
+                packetSessionData.safetyCar = br.ReadByte();
+                packetSessionData.safetyCarExperience = br.ReadByte();
+                packetSessionData.formationLap = br.ReadByte();
+                packetSessionData.formationLapExperience = br.ReadByte();
+                packetSessionData.redFlags = br.ReadByte();
+                packetSessionData.affectsLicenceLevelSolo = br.ReadByte();
+                packetSessionData.affectsLicenceLevelMP = br.ReadByte();
+                packetSessionData.numSessionsInWeekend = br.ReadByte();
+                packetSessionData.weekendStructure = br.ReadBytes(12);
+                packetSessionData.sector2LapDistanceStart = br.ReadSingle();
+                packetSessionData.sector3LapDistanceStart = br.ReadSingle();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete PacketSessionData packet. Skipping...");
+            }
+            return packetSessionData;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        private static LapData ReadLapData(BinaryReader br)
+        {
+            LapData lapData = new();
+            try
+            {
+                lapData.lastLapTimeInMS = br.ReadUInt32();
+                lapData.currentLapTimeInMS = br.ReadUInt32();
+                lapData.sector1TimeMSPart = br.ReadUInt16();
+                lapData.sector1TimeMinutesPart = br.ReadByte();
+                lapData.sector2TimeMSPart = br.ReadUInt16();
+                lapData.sector2TimeMinutesPart = br.ReadByte();
+                lapData.deltaToCarInFrontMSPart = br.ReadUInt16();
+                lapData.deltaToCarInFrontMinutesPart = br.ReadByte();
+                lapData.deltaToRaceLeaderMSPart = br.ReadUInt16();
+                lapData.deltaToRaceLeaderMinutesPart = br.ReadByte();
+                lapData.lapDistance = br.ReadSingle();
+                lapData.totalDistance = br.ReadSingle();
+                lapData.safetyCarDelta = br.ReadSingle();
+                lapData.carPosition = br.ReadByte();
+                lapData.currentLapNum = br.ReadByte();
+                lapData.pitStatus = br.ReadByte();
+                lapData.numPitStops = br.ReadByte();
+                lapData.sector = br.ReadByte();
+                lapData.currentLapInvalid = br.ReadByte();
+                lapData.penalties = br.ReadByte();
+                lapData.totalWarnings = br.ReadByte();
+                lapData.cornerCuttingWarnings = br.ReadByte();
+                lapData.numUnservedDriveThroughPens = br.ReadByte();
+                lapData.numUnservedStopGoPens = br.ReadByte();
+                lapData.gridPosition = br.ReadByte();
+                lapData.driverStatus = br.ReadByte();
+                lapData.resultStatus = br.ReadByte();
+                lapData.pitLaneTimerActive = br.ReadByte();
+                lapData.pitLaneTimeInLaneInMS = br.ReadUInt16();
+                lapData.pitStopTimerInMS = br.ReadUInt16();
+                lapData.pitStopShouldServePen = br.ReadByte();
+                lapData.speedTrapFastestSpeed = br.ReadSingle();
+                lapData.speedTrapFastestLap = br.ReadByte();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete LapData packet. Skipping...");
+            }
+            return lapData;
+        }
+        private static PacketLapData ReadPacketLapData(BinaryReader br)
+        {//id=2, Packets sent on Frame 1, Packets sent on Frame 2, Packets sent on Frame 31
+            PacketLapData packetLapData = new();
+            try
+            {
+                packetLapData.header = ReadPacketHeader(br);
+                packetLapData.lapData = new LapData[22];
+                for (int i = 0; i < 22; i++) packetLapData.lapData[i] = ReadLapData(br);
+                packetLapData.timeTrialPBCarIdx = br.ReadByte();
+                packetLapData.timeTrialRivalCarIdx = br.ReadByte();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete PacketLapData packet. Skipping...");
+            }
+            return packetLapData;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        private static PacketEventData ReadPacketEventData(BinaryReader br)
+        {//id=3, 
+            PacketEventData packetEventData = new();
+            try
+            {
+                packetEventData.header = ReadPacketHeader(br);
+                packetEventData.eventStringCode = br.ReadBytes(4);
+                string eventCode = System.Text.Encoding.ASCII.GetString(packetEventData.eventStringCode);
+                switch (eventCode)
+                {
+                    case "FTLP":
+                        packetEventData.eventDetails.FastestLap.vehicleIdx = br.ReadByte();
+                        packetEventData.eventDetails.FastestLap.lapTime = br.ReadSingle();
+                        break;
+                    case "RTMT":
+                        packetEventData.eventDetails.Retirement.vehicleIdx = br.ReadByte();
+                        break;
+                    case "TMPT":
+                        packetEventData.eventDetails.TeamMateInPits.vehicleIdx = br.ReadByte();
+                        break;
+                    case "RCWN":
+                        packetEventData.eventDetails.RaceWinner.vehicleIdx = br.ReadByte();
+                        break;
+                    case "PENA":
+                        packetEventData.eventDetails.Penalty.penaltyType = br.ReadByte();
+                        packetEventData.eventDetails.Penalty.infringementType = br.ReadByte();
+                        packetEventData.eventDetails.Penalty.vehicleIdx = br.ReadByte();
+                        packetEventData.eventDetails.Penalty.otherVehicleIdx = br.ReadByte();
+                        packetEventData.eventDetails.Penalty.time = br.ReadByte();
+                        packetEventData.eventDetails.Penalty.lapNum = br.ReadByte();
+                        packetEventData.eventDetails.Penalty.placesGained = br.ReadByte();
+                        break;
+                    case "SPTP":
+                        packetEventData.eventDetails.SpeedTrap.vehicleIdx = br.ReadByte();
+                        packetEventData.eventDetails.SpeedTrap.speed = br.ReadSingle();
+                        packetEventData.eventDetails.SpeedTrap.isOverallFastestInSession = br.ReadByte();
+                        packetEventData.eventDetails.SpeedTrap.isDriverFastestInSession = br.ReadByte();
+                        packetEventData.eventDetails.SpeedTrap.fastestVehicleIdxInSession = br.ReadByte();
+                        packetEventData.eventDetails.SpeedTrap.fastestSpeedInSession = br.ReadSingle();
+                        break;
+                    case "STLG":
+                        packetEventData.eventDetails.StartLights.numLights = br.ReadByte();
+                        break;
+                    case "DTSV":
+                        packetEventData.eventDetails.DriveThroughPenaltyServed.vehicleIdx = br.ReadByte();
+                        break;
+                    case "SGSV":
+                        packetEventData.eventDetails.StopGoPenaltyServed.vehicleIdx = br.ReadByte();
+                        break;
+                    case "FLBK":
+                        packetEventData.eventDetails.Flashback.flashbackFrameIdentifier = br.ReadUInt32();
+                        packetEventData.eventDetails.Flashback.flashbackSessionTime = br.ReadSingle();
+                        break;
+                    case "BUTN":
+                        packetEventData.eventDetails.Buttons.buttonStatus = br.ReadUInt32();
+                        break;
+                    case "OVTK":
+                        packetEventData.eventDetails.Overtake.overtakingVehicleIdx = br.ReadByte();
+                        packetEventData.eventDetails.Overtake.beingOvertakenVehicleIdx = br.ReadByte();
+                        break;
+                    case "SCAR":
+                        packetEventData.eventDetails.SafetyCar.safetyCarType = br.ReadByte();
+                        packetEventData.eventDetails.SafetyCar.eventType = br.ReadByte();
+                        break;
+                    case "COLL":
+                        packetEventData.eventDetails.Collision.vehicle1Idx = br.ReadByte();
+                        packetEventData.eventDetails.Collision.vehicle2Idx = br.ReadByte();
+                        break;
+                    default:
+                        // Other events like SSTA, SEND, DRSE, DRSD, CHQF, LGOT, RDFL don't carry extra data
+                        break;
+                }
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete PacketEventData packet. Skipping...");
+            }
+            return packetEventData;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        private static ParticipantData ReadParticipantData(BinaryReader br)
+        {
+            ParticipantData participantData = new();
+            try
+            {
+                participantData.aiControlled = br.ReadByte();
+                participantData.driverId = br.ReadByte();
+                participantData.networkId = br.ReadByte();
+                participantData.teamId = br.ReadByte();
+                participantData.myTeam = br.ReadByte();
+                participantData.raceNumber = br.ReadByte();
+                participantData.nationality = br.ReadByte();
+                participantData.name = br.ReadBytes(48);
+                participantData.yourTelemetry = br.ReadByte();
+                participantData.showOnlineNames = br.ReadByte();
+                participantData.techLevel = br.ReadUInt16();
+                participantData.platform = br.ReadByte();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete ParticipantData packet. Skipping...");
+            }
+            return participantData;
+        }
+        private static PacketParticipantsData ReadPacketParticipantsData(BinaryReader br)
+        {//id=4,//id=1, Packets sent on Frame 1
+            PacketParticipantsData packetParticipantsData = new();
+            try
+            {
+                packetParticipantsData.header = ReadPacketHeader(br);
+                packetParticipantsData.numActiveCars = br.ReadByte();
+                packetParticipantsData.participants = new ParticipantData[22];
+                for (int i = 0; i < 22; i++) packetParticipantsData.participants[i] = ReadParticipantData(br);
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete PacketParticipantsData packet. Skipping...");
+            }
+            return packetParticipantsData;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        private static CarSetupData ReadCarSetupData(BinaryReader br)
+        {
+            CarSetupData carSetupData = new();
+            try
+            {
+                carSetupData.frontWing = br.ReadByte();
+                carSetupData.rearWing = br.ReadByte();
+                carSetupData.onThrottle = br.ReadByte();
+                carSetupData.offThrottle = br.ReadByte();
+                carSetupData.frontCamber = br.ReadSingle();
+                carSetupData.rearCamber = br.ReadSingle();
+                carSetupData.frontToe = br.ReadSingle();
+                carSetupData.rearToe = br.ReadSingle();
+                carSetupData.frontSuspension = br.ReadByte();
+                carSetupData.rearSuspension = br.ReadByte();
+                carSetupData.frontAntiRollBar = br.ReadByte();
+                carSetupData.rearAntiRollBar = br.ReadByte();
+                carSetupData.frontSuspensionHeight = br.ReadByte();
+                carSetupData.rearSuspensionHeight = br.ReadByte();
+                carSetupData.brakePressure = br.ReadByte();
+                carSetupData.brakeBias = br.ReadByte();
+                carSetupData.engineBraking = br.ReadByte();
+                carSetupData.rearLeftTyrePressure = br.ReadSingle();
+                carSetupData.rearRightTyrePressure = br.ReadSingle();
+                carSetupData.frontLeftTyrePressure = br.ReadSingle();
+                carSetupData.frontRightTyrePressure = br.ReadSingle();
+                carSetupData.ballast = br.ReadByte();
+                carSetupData.fuelLoad = br.ReadSingle();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete CarSetupData packet. Skipping...");
+            }
+            return carSetupData;
+        }
+        private static PacketCarSetupData ReadPacketCarSetupData(BinaryReader br)
+        {//id=5,Packets sent on Frame 1, Packets sent on Frame 31
+            PacketCarSetupData packetCarSetupData = new();
+            try
+            {
+                packetCarSetupData.header = ReadPacketHeader(br);
+                packetCarSetupData.carSetups = new CarSetupData[22];
+                for (int i = 0; i < 22; i++) packetCarSetupData.carSetups[i] = ReadCarSetupData(br);
+                packetCarSetupData.nextFrontWingValue = br.ReadSingle();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete PacketCarSetupData packet. Skipping...");
+            }
+            return packetCarSetupData;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        private static CarTelemetryData ReadCarTelemetryData(BinaryReader br)
+        {
+            CarTelemetryData carTelemetrydata = new();
+            try
+            {
+                carTelemetrydata.speed = br.ReadUInt16();
+                carTelemetrydata.throttle = br.ReadSingle();
+                carTelemetrydata.steer = br.ReadSingle();
+                carTelemetrydata.brake = br.ReadSingle();
+                carTelemetrydata.clutch = br.ReadByte();
+                carTelemetrydata.gear = br.ReadSByte();
+                carTelemetrydata.engineRPM = br.ReadUInt16();
+                carTelemetrydata.drs = br.ReadByte();
+                carTelemetrydata.revLightsPercent = br.ReadByte();
+                carTelemetrydata.revLightsBitValue = br.ReadUInt16();
+                carTelemetrydata.brakesTemperature = new ushort[4];
+                carTelemetrydata.tyresSurfaceTemperature = new byte[4];
+                carTelemetrydata.tyresInnerTemperature = new byte[4];
+                carTelemetrydata.tyresPressure = new float[4];
+                carTelemetrydata.surfaceType = new byte[4];
+                for (int i = 0; i < 4; i++) carTelemetrydata.brakesTemperature[i] = br.ReadUInt16();
+                for (int i = 0; i < 4; i++) carTelemetrydata.tyresSurfaceTemperature[i] = br.ReadByte();
+                for (int i = 0; i < 4; i++) carTelemetrydata.tyresInnerTemperature[i] = br.ReadByte();
+                carTelemetrydata.engineTemperature = br.ReadUInt16();
+                for (int i = 0; i < 4; i++) carTelemetrydata.tyresPressure[i] = br.ReadSingle();
+                for (int i = 0; i < 4; i++) carTelemetrydata.surfaceType[i] = br.ReadByte();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete CarTelemetryData packet. Skipping...");
+            }
+            return carTelemetrydata;
+        }
+        private static PacketCarTelemetryData ReadPacketCarTelemetryData(BinaryReader br)
+        {//id=6, Packets sent on Frame 1, Packets sent on Frame 2, Packets sent on Frame 31
+            PacketCarTelemetryData packetCarTelemetryData = new();
+            try
+            {
+                packetCarTelemetryData.header = ReadPacketHeader(br);
+                packetCarTelemetryData.carTelemetryData = new CarTelemetryData[22];
+                for (int i = 0; i < 22; i++) packetCarTelemetryData.carTelemetryData[i] = ReadCarTelemetryData(br);
+                packetCarTelemetryData.mfdPanelIndex = br.ReadByte();
+                packetCarTelemetryData.mfdPanelIndexSecondaryPlayer = br.ReadByte();
+                packetCarTelemetryData.suggestedGear = br.ReadSByte();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete PacketCarTelemetryData packet. Skipping...");
+            }
+            return packetCarTelemetryData;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        private static CarStatusData ReadCarStatusData(BinaryReader br)
+        {
+            CarStatusData carStatusData = new();
+            try
+            {
+                carStatusData.tractionControl = br.ReadByte();
+                carStatusData.antiLockBrakes = br.ReadByte();
+                carStatusData.fuelMix = br.ReadByte();
+                carStatusData.frontBrakeBias = br.ReadByte();
+                carStatusData.pitLimiterStatus = br.ReadByte();
+                carStatusData.fuelInTank = br.ReadSingle();
+                carStatusData.fuelCapacity = br.ReadSingle();
+                carStatusData.fuelRemainingLaps = br.ReadSingle();
+                carStatusData.maxRPM = br.ReadUInt16();
+                carStatusData.idleRPM = br.ReadUInt16();
+                carStatusData.maxGears = br.ReadByte();
+                carStatusData.drsAllowed = br.ReadByte();
+                carStatusData.drsActivationDistance = br.ReadUInt16();
+                carStatusData.actualTyreCompound = br.ReadByte();
+                carStatusData.visualTyreCompound = br.ReadByte();
+                carStatusData.tyresAgeLaps = br.ReadByte();
+                carStatusData.vehicleFiaFlags = br.ReadSByte();
+                carStatusData.enginePowerICE = br.ReadSingle();
+                carStatusData.enginePowerMGUK = br.ReadSingle();
+                carStatusData.ersStoreEnergy = br.ReadSingle();
+                carStatusData.ersDeployMode = br.ReadByte();
+                carStatusData.ersHarvestedThisLapMGUK = br.ReadSingle();
+                carStatusData.ersHarvestedThisLapMGUH = br.ReadSingle();
+                carStatusData.ersDeployedThisLap = br.ReadSingle();
+                carStatusData.networkPaused = br.ReadByte();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete CarStatusData packet. Skipping...");
+            }
+            return carStatusData;
+        }
+        private static PacketCarStatusData ReadPacketCarStatusData(BinaryReader br)
+        {//id=7, Packets sent on Frame 1, Packets sent on Frame 2, Packets sent on Frame 31
+            PacketCarStatusData packetCarStatusData = new();
+            try
+            {
+                packetCarStatusData.header = ReadPacketHeader(br);
+                packetCarStatusData.carStatusData = new CarStatusData[22];
+                for (int i = 0; i < 22; i++) packetCarStatusData.carStatusData[i] = ReadCarStatusData(br);
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete PacketCarStatusData packet. Skipping...");
+            }
+            return packetCarStatusData;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        private static FinalClassificationData ReadFinalClassificationData(BinaryReader br)
+        {
+            FinalClassificationData finalClassificationData = new();
+            try
+            {
+                finalClassificationData.position = br.ReadByte();
+                finalClassificationData.numLaps = br.ReadByte();
+                finalClassificationData.gridPosition = br.ReadByte();
+                finalClassificationData.points = br.ReadByte();
+                finalClassificationData.numPitStops = br.ReadByte();
+                finalClassificationData.resultStatus = br.ReadByte();
+                finalClassificationData.bestLapTimeInMS = br.ReadUInt32();
+                finalClassificationData.totalRaceTime = br.ReadDouble();
+                finalClassificationData.penaltiesTime = br.ReadByte();
+                finalClassificationData.numPenalties = br.ReadByte();
+                finalClassificationData.numTyreStints = br.ReadByte();
+                finalClassificationData.tyreStintsActual = br.ReadBytes(8);
+                finalClassificationData.tyreStintsVisual = br.ReadBytes(8);
+                finalClassificationData.tyreStintsEndLaps = br.ReadBytes(8);
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete FinalClassificationData packet. Skipping...");
+            }
+            return finalClassificationData;
+        }
+        private static PacketFinalClassificationData ReadPacketFinalClassificationData(BinaryReader br)
+        {//id=8, 
+            PacketFinalClassificationData packetFinalClassificationData = new();
+            try
+            {
+                packetFinalClassificationData.header = ReadPacketHeader(br);
+                packetFinalClassificationData.numCars = br.ReadByte();
+                packetFinalClassificationData.classificationData = new FinalClassificationData[22];
+                for (int i = 0; i < 22; i++) packetFinalClassificationData.classificationData[i] = ReadFinalClassificationData(br);
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete PacketFinalClassificationData packet. Skipping...");
+            }
+            return packetFinalClassificationData;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        private static LobbyInfoData ReadLobbyInfoData(BinaryReader br)
+        {
+            LobbyInfoData lobbyInfoData = new();
+            try
+            {
+                lobbyInfoData.aiControlled = br.ReadByte();
+                lobbyInfoData.teamId = br.ReadByte();
+                lobbyInfoData.nationality = br.ReadByte();
+                lobbyInfoData.platform = br.ReadByte();
+                lobbyInfoData.name = br.ReadBytes(48);
+                lobbyInfoData.carNumber = br.ReadByte();
+                lobbyInfoData.yourTelemetry = br.ReadByte();
+                lobbyInfoData.showOnlineNames = br.ReadByte();
+                lobbyInfoData.techLevel = br.ReadUInt16();
+                lobbyInfoData.readyStatus = br.ReadByte();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete LobbyInfoData packet. Skipping...");
+            }
+            return lobbyInfoData;
+        }
+        private static PacketLobbyInfoData ReadPacketLobbyInfoData(BinaryReader br)
+        {//id=9, 
+            PacketLobbyInfoData packetLobbyInfoData = new();
+            try
+            {
+                packetLobbyInfoData.header = ReadPacketHeader(br);
+                packetLobbyInfoData.numPlayers = br.ReadByte();
+                packetLobbyInfoData.lobbyPlayers = new LobbyInfoData[22];
+                for (int i = 0; i < 22; i++) packetLobbyInfoData.lobbyPlayers[i] = ReadLobbyInfoData(br);
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete PacketLobbyInfoData packet. Skipping...");
+            }
+            return packetLobbyInfoData;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        private static CarDamageData ReadCarDamageData(BinaryReader br)
+        {
+            CarDamageData carDamageData = new();
+            try
+            {
+                carDamageData.tyresWear = new float[4];
+                for (int i = 0; i < 4; i++) carDamageData.tyresWear[i] = br.ReadSingle();
+                carDamageData.tyresDamage = br.ReadBytes(4);
+                carDamageData.brakesDamage = br.ReadBytes(4);
+                carDamageData.frontLeftWingDamage = br.ReadByte();
+                carDamageData.frontRightWingDamage = br.ReadByte();
+                carDamageData.rearWingDamage = br.ReadByte();
+                carDamageData.floorDamage = br.ReadByte();
+                carDamageData.diffuserDamage = br.ReadByte();
+                carDamageData.sidepodDamage = br.ReadByte();
+                carDamageData.drsFault = br.ReadByte();
+                carDamageData.ersFault = br.ReadByte();
+                carDamageData.gearBoxDamage = br.ReadByte();
+                carDamageData.engineDamage = br.ReadByte();
+                carDamageData.engineMGUHWear = br.ReadByte();
+                carDamageData.engineESWear = br.ReadByte();
+                carDamageData.engineCEWear = br.ReadByte();
+                carDamageData.engineICEWear = br.ReadByte();
+                carDamageData.engineMGUKWear = br.ReadByte();
+                carDamageData.engineTCWear = br.ReadByte();
+                carDamageData.engineBlown = br.ReadByte();
+                carDamageData.engineSeized = br.ReadByte();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete CarDamageData packet. Skipping...");
+            }
+            return carDamageData;
+        }
+        private static PacketCarDamageData ReadPacketCarDamageData(BinaryReader br)
+        {//id=10, Packets sent on Frame 1, Packets sent on Frame 31
+            PacketCarDamageData packetCarDamageData = new();
+            try
+            {
+                packetCarDamageData.header = ReadPacketHeader(br);
+                packetCarDamageData.carDamageData = new CarDamageData[22];
+                for (int i = 0; i < 22; i++) packetCarDamageData.carDamageData[i] = ReadCarDamageData(br);
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete PacketCarDamageData packet. Skipping...");
+            }
+            return packetCarDamageData;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        private static LapHistoryData ReadLapHistoryData(BinaryReader br)
+        {
+            LapHistoryData lapHistoryData = new();
+            try
+            {
+                lapHistoryData.lapTimeInMS = br.ReadUInt32();
+                lapHistoryData.sector1TimeInMS = br.ReadUInt16();
+                lapHistoryData.sector1TimeMinutes = br.ReadByte();
+                lapHistoryData.sector2TimeInMS = br.ReadUInt16();
+                lapHistoryData.sector2TimeMinutes = br.ReadByte();
+                lapHistoryData.sector3TimeInMS = br.ReadUInt16();
+                lapHistoryData.sector3TimeMinutes = br.ReadByte();
+                lapHistoryData.lapValidBitFlags = br.ReadByte();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete LapHistoryData. Skipping...");
+            }
+            return lapHistoryData;
+        }
+        private static TyreStintHistoryData ReadTyreStintHistoryData(BinaryReader br)
+        {
+            TyreStintHistoryData tyreStintHistoryData = new();
+            try
+            {
+                tyreStintHistoryData.endLap = br.ReadByte();
+                tyreStintHistoryData.tyreActualCompound = br.ReadByte();
+                tyreStintHistoryData.tyreVisualCompound = br.ReadByte();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete TyreStintHistoryData. Skipping...");
+            }
+            return tyreStintHistoryData;
+        }
+        private static PacketSessionHistoryData ReadPacketSessionHistoryData(BinaryReader br)
+        {//id=11, 
+            PacketSessionHistoryData packetSessionHistoryData = new();
+            try
+            {
+                packetSessionHistoryData.header = ReadPacketHeader(br);
+                packetSessionHistoryData.carIdx = br.ReadByte();
+                packetSessionHistoryData.numLaps = br.ReadByte();
+                packetSessionHistoryData.numTyreStints = br.ReadByte();
+                packetSessionHistoryData.bestLapTimeLapNum = br.ReadByte();
+                packetSessionHistoryData.bestSector1LapNum = br.ReadByte();
+                packetSessionHistoryData.bestSector2LapNum = br.ReadByte();
+                packetSessionHistoryData.bestSector3LapNum = br.ReadByte();
+                packetSessionHistoryData.lapHistoryData = new LapHistoryData[100];
+                for (int i = 0; i < 100; i++) packetSessionHistoryData.lapHistoryData[i] = ReadLapHistoryData(br);
+                packetSessionHistoryData.tyreStintsHistoryData = new TyreStintHistoryData[8];
+                for (int i = 0; i < 8; i++) packetSessionHistoryData.tyreStintsHistoryData[i] = ReadTyreStintHistoryData(br);
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete PacketSessionHistoryData packet. Skipping...");
+            }
+            return packetSessionHistoryData;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        private static TyreSetData ReadTyreSetData(BinaryReader br)
+        {
+            TyreSetData tyreSetData = new();
+            try
+            {
+                tyreSetData.actualTyreCompound = br.ReadByte();
+                tyreSetData.visualTyreCompound = br.ReadByte();
+                tyreSetData.wear = br.ReadByte();
+                tyreSetData.available = br.ReadByte();
+                tyreSetData.recommendedSession = br.ReadByte();
+                tyreSetData.lifeSpan = br.ReadByte();
+                tyreSetData.usableLife = br.ReadByte();
+                tyreSetData.lapDeltaTime = br.ReadInt16();
+                tyreSetData.fitted = br.ReadByte();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete TyreSetData. Skipping...");
+            }
+            return tyreSetData;
+        }
+        private static PacketTyreSetsData ReadPacketTyreSetsData(BinaryReader br)
+        {//id=12, 
+            PacketTyreSetsData packetTyreSetsData = new();
+            try
+            {
+                packetTyreSetsData.header = ReadPacketHeader(br);
+                packetTyreSetsData.carIdx = br.ReadByte();
+                packetTyreSetsData.tyreSetData = new TyreSetData[20];
+                for (int i = 0; i < 20; i++) packetTyreSetsData.tyreSetData[i] = ReadTyreSetData(br);
+                packetTyreSetsData.fittedIdx = br.ReadByte();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete PacketTyreSetsData packet. Skipping...");
+            }
+            return packetTyreSetsData;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        private static PacketMotionExData ReadPacketMotionExData(BinaryReader br)
+        {//id=13, Packets sent on Frame 1, Packets sent on Frame 2, Packets sent on Frame 31
+            PacketMotionExData packetMotionExData = new();
+            try
+            {
+                packetMotionExData.header = ReadPacketHeader(br);
+                packetMotionExData.suspensionPosition = new float[4];
+                for (int i = 0; i < 4; i++) packetMotionExData.suspensionPosition[i] = br.ReadSingle();
+                packetMotionExData.suspensionVelocity = new float[4];
+                for (int i = 0; i < 4; i++) packetMotionExData.suspensionVelocity[i] = br.ReadSingle();
+                packetMotionExData.suspensionAcceleration = new float[4];
+                for (int i = 0; i < 4; i++) packetMotionExData.suspensionAcceleration[i] = br.ReadSingle();
+                packetMotionExData.wheelSpeed = new float[4];
+                for (int i = 0; i < 4; i++) packetMotionExData.wheelSpeed[i] = br.ReadSingle();
+                packetMotionExData.wheelSlipRatio = new float[4];
+                for (int i = 0; i < 4; i++) packetMotionExData.wheelSlipRatio[i] = br.ReadSingle();
+                packetMotionExData.wheelSlipAngle = new float[4];
+                for (int i = 0; i < 4; i++) packetMotionExData.wheelSlipAngle[i] = br.ReadSingle();
+                packetMotionExData.wheelLatForce = new float[4];
+                for (int i = 0; i < 4; i++) packetMotionExData.wheelLatForce[i] = br.ReadSingle();
+                packetMotionExData.wheelLongForce = new float[4];
+                for (int i = 0; i < 4; i++) packetMotionExData.wheelLongForce[i] = br.ReadSingle();
+                packetMotionExData.heightOfCOGAboveGround = br.ReadSingle();
+                packetMotionExData.localVelocityX = br.ReadSingle();
+                packetMotionExData.localVelocityY = br.ReadSingle();
+                packetMotionExData.localVelocityZ = br.ReadSingle();
+                packetMotionExData.angularVelocityX = br.ReadSingle();
+                packetMotionExData.angularVelocityY = br.ReadSingle();
+                packetMotionExData.angularVelocityZ = br.ReadSingle();
+                packetMotionExData.angularAccelerationX = br.ReadSingle();
+                packetMotionExData.angularAccelerationY = br.ReadSingle();
+                packetMotionExData.angularAccelerationZ = br.ReadSingle();
+                packetMotionExData.frontWheelsAngle = br.ReadSingle();
+                packetMotionExData.wheelVertForce = new float[4];
+                for (int i = 0; i < 4; i++) packetMotionExData.wheelVertForce[i] = br.ReadSingle();
+                packetMotionExData.frontAeroHeight = br.ReadSingle();
+                packetMotionExData.rearAeroHeight = br.ReadSingle();
+                packetMotionExData.frontRollAngle = br.ReadSingle();
+                packetMotionExData.rearRollAngle = br.ReadSingle();
+                packetMotionExData.chassisYaw = br.ReadSingle();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete PacketMotionExData packet. Skipping...");
+            }
+            return packetMotionExData;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        private static TimeTrialDataSet ReadTimeTrialDataSet(BinaryReader br)
+        {
+            TimeTrialDataSet timeTrialDataSet = new();
+            try
+            {
+                timeTrialDataSet.carIdx = br.ReadByte();
+                timeTrialDataSet.teamId = br.ReadByte();
+                timeTrialDataSet.lapTimeInMS = br.ReadUInt32();
+                timeTrialDataSet.sector1TimeInMS = br.ReadUInt32();
+                timeTrialDataSet.sector2TimeInMS = br.ReadUInt32();
+                timeTrialDataSet.sector3TimeInMS = br.ReadUInt32();
+                timeTrialDataSet.tractionControl = br.ReadByte();
+                timeTrialDataSet.gearboxAssist = br.ReadByte();
+                timeTrialDataSet.antiLockBrakes = br.ReadByte();
+                timeTrialDataSet.equalCarPerformance = br.ReadByte();
+                timeTrialDataSet.customSetup = br.ReadByte();
+                timeTrialDataSet.valid = br.ReadByte();
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete TimeTrialDataSet packet. Skipping...");
+            }
+            return timeTrialDataSet;
+        }
+        private static PacketTimeTrialData ReadPacketTimeTrialData(BinaryReader br)
+        {//id=14, 
+            PacketTimeTrialData packetTimeTrialData = new();
+            try
+            {
+                packetTimeTrialData.header = ReadPacketHeader(br);
+                packetTimeTrialData.playerSessionBestDataSet = ReadTimeTrialDataSet(br);
+                packetTimeTrialData.personalBestDataSet = ReadTimeTrialDataSet(br);
+                packetTimeTrialData.rivalDataSet = ReadTimeTrialDataSet(br);
+            }
+            catch (EndOfStreamException)
+            {
+                Console.WriteLine("Warning: Incomplete PacketTimeTrialData packet. Skipping...");
+            }
+            return packetTimeTrialData;
+        }
+//Inserters----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        private static MySqlCommand CreateInsertCommandCarTelemetryData(MySqlConnection conn, CarTelemetryData carTelemetrydata)
+        {
+            var cmd = new MySqlCommand(@"
+                INSERT INTO telemetry (
+                    speed, throttle, steer, brake, clutch, gear, engineRPM, drs, revLightsPercent, revLightsBitValue,
+                    brakesTemperature0, brakesTemperature1, brakesTemperature2, brakesTemperature3,
+                    tyresSurfaceTemperature0, tyresSurfaceTemperature1, tyresSurfaceTemperature2, tyresSurfaceTemperature3,
+                    tyresInnerTemperature0, tyresInnerTemperature1, tyresInnerTemperature2, tyresInnerTemperature3,
+                    engineTemperature,
+                    tyresPressure0, tyresPressure1, tyresPressure2, tyresPressure3,
+                    surfaceType0, surfaceType1, surfaceType2, surfaceType3
+                ) VALUES (
+                    @speed, @throttle, @steer, @brake, @clutch, @gear, @engineRPM, @drs, @revLightsPercent, @revLightsBitValue,
+                    @brakesTemperature0, @brakesTemperature1, @brakesTemperature2, @brakesTemperature3,
+                    @tyresSurfaceTemperature0, @tyresSurfaceTemperature1, @tyresSurfaceTemperature2, @tyresSurfaceTemperature3,
+                    @tyresInnerTemperature0, @tyresInnerTemperature1, @tyresInnerTemperature2, @tyresInnerTemperature3,
+                    @engineTemperature,
+                    @tyresPressure0, @tyresPressure1, @tyresPressure2, @tyresPressure3,
+                    @surfaceType0, @surfaceType1, @surfaceType2, @surfaceType3
+                )", conn
+            );
+            cmd.Parameters.AddWithValue("@speed", carTelemetrydata.speed);
+            cmd.Parameters.AddWithValue("@throttle", carTelemetrydata.throttle);
+            cmd.Parameters.AddWithValue("@steer", carTelemetrydata.steer);
+            cmd.Parameters.AddWithValue("@brake", carTelemetrydata.brake);
+            cmd.Parameters.AddWithValue("@clutch", carTelemetrydata.clutch);
+            cmd.Parameters.AddWithValue("@gear", carTelemetrydata.gear);
+            cmd.Parameters.AddWithValue("@engineRPM", carTelemetrydata.engineRPM);
+            cmd.Parameters.AddWithValue("@drs", carTelemetrydata.drs);
+            cmd.Parameters.AddWithValue("@revLightsPercent", carTelemetrydata.revLightsPercent);
+            cmd.Parameters.AddWithValue("@revLightsBitValue", carTelemetrydata.revLightsBitValue);
+            for (int i = 0; i < 4; i++)
+            {
+                cmd.Parameters.AddWithValue($"@brakesTemperature{i}", carTelemetrydata.brakesTemperature?[i] ?? 0);
+                cmd.Parameters.AddWithValue($"@tyresSurfaceTemperature{i}", carTelemetrydata.tyresSurfaceTemperature?[i] ?? 0);
+                cmd.Parameters.AddWithValue($"@tyresInnerTemperature{i}", carTelemetrydata.tyresInnerTemperature?[i] ?? 0);
+                cmd.Parameters.AddWithValue($"@tyresPressure{i}", carTelemetrydata.tyresPressure?[i] ?? 0);
+                cmd.Parameters.AddWithValue($"@surfaceType{i}", carTelemetrydata.surfaceType?[i] ?? 0);
+            }
+            cmd.Parameters.AddWithValue("@engineTemperature", carTelemetrydata.engineTemperature);
+            return cmd;
+        }
+//Structs------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct PacketHeader
+        {//29B
+            public ushort packetFormat;
+            public byte gameYear;
+            public byte gameMajorVersion;
+            public byte gameMinorVersion;
+            public byte packetVersion;
+            public byte packetId;
+            public ulong sessionUID;
+            public float sessionTime;
+            public uint frameIdentifier;
+            public uint overallFrameIdentifier;
+            public byte playerCarIndex;
+            public byte secondaryPlayerCarIndex;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct CarMotionData
+        {//part of PacketMotionData
+            public float worldPositionX; // World space X position - metres
+            public float worldPositionY; // World space Y position
+            public float worldPositionZ; // World space Z position
+            public float worldVelocityX; // Velocity in world space X – metres/s
+            public float worldVelocityY; // Velocity in world space Y
+            public float worldVelocityZ; // Velocity in world space Z
+            public short worldForwardDirX; // World space forward X direction (normalised)
+            public short worldForwardDirY; // World space forward Y direction (normalised)
+            public short worldForwardDirZ; // World space forward Z direction (normalised)
+            public short worldRightDirX; // World space right X direction (normalised)
+            public short worldRightDirY; // World space right Y direction (normalised)
+            public short worldRightDirZ; // World space right Z direction (normalised)
+            public float gForceLateral; // Lateral G-Force component
+            public float gForceLongitudinal; // Longitudinal G-Force component
+            public float gForceVertical; // Vertical G-Force component
+            public float yaw; // Yaw angle in radians
+            public float pitch; // Pitch angle in radians
+            public float roll; // Roll angle in radians
+        };
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        struct PacketMotionData
+        {//1349B
+            public PacketHeader header; // Header
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 22)]
+            public CarMotionData[] carMotionData; // Data for all cars on track
+        };
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct MarshalZone
+        {//part of PacketSessionData
+            public float zoneStart; // Fraction (0..1) of way through the lap the marshal zone starts
+            public sbyte zoneFlag; // -1 = invalid/unknown, 0 = none, 1 = green, 2 = blue, 3 = yellow
+        };
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct WeatherForecastSample
+        {// part of PacketSessionData
+            public byte sessionType; // 0 = unknown, see appendix ??????????????????????????????????????????????????????????????????????????????????????
+            public byte timeOffset; // Time in minutes the forecast is for
+            public byte weather; // Weather - 0 = clear, 1 = light cloud, 2 = overcast, 3 = light rain, 4 = heavy rain, 5 = storm
+            public sbyte trackTemperature; // Track temp. in degrees Celsius
+            public sbyte trackTemperatureChange; // Track temp. change – 0 = up, 1 = down, 2 = no change
+            public sbyte airTemperature; // Air temp. in degrees celsius
+            public sbyte airTemperatureChange; // Air temp. change – 0 = up, 1 = down, 2 = no change
+            public byte rainPercentage; // Rain percentage (0-100)
+        };
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        struct PacketSessionData
+        {//753B
+            public PacketHeader header; // Header
+            public byte weather; // Weather - 0 = clear, 1 = light cloud, 2 = overcast, 3 = light rain, 4 = heavy rain, 5 = storm
+            public sbyte trackTemperature; // Track temp. in degrees celsius
+            public sbyte airTemperature; // Air temp. in degrees celsius
+            public byte totalLaps; // Total number of laps in this race
+            public ushort trackLength; // Track length in metres
+            public byte sessionType; // 0 = unknown, see appendix
+            public sbyte trackId; // -1 for unknown, see appendix
+            public byte formula; // Formula, 0 = F1 Modern, 1 = F1 Classic, 2 = F2, 3 = F1 Generic, 4 = Beta, 6 = Esports, 8 = F1 World, 9 = F1 Elimination
+            public ushort sessionTimeLeft; // Time left in session in seconds
+            public ushort sessionDuration; // Session duration in seconds
+            public byte pitSpeedLimit; // Pit speed limit in kilometres per hour
+            public byte gamePaused; // Whether the game is paused – network game only
+            public byte isSpectating; // Whether the player is spectating
+            public byte spectatorCarIndex; // Index of the car being spectated
+            public byte sliProNativeSupport; // SLI Pro support, 0 = inactive, 1 = active
+            public byte numMarshalZones; // Number of marshal zones to follow
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 21)]
+            public MarshalZone[] marshalZones; // List of marshal zones – max 21
+            public byte safetyCarStatus; // 0 = no safety car, 1 = full, 2 = virtual, 3 = formation lap
+            public byte networkGame; // 0 = offline, 1 = online
+            public byte numWeatherForecastSamples; // Number of weather samples to follow
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 64)]
+            public WeatherForecastSample[] weatherForecastSamples; // Array of weather forecast samples
+            public byte forecastAccuracy; // 0 = Perfect, 1 = Approximate
+            public byte aiDifficulty; // AI Difficulty rating – 0-110
+            public uint seasonLinkIdentifier; // Identifier for season - persists across saves
+            public uint weekendLinkIdentifier; // Identifier for weekend - persists across saves
+            public uint sessionLinkIdentifier; // Identifier for session - persists across saves
+            public byte pitStopWindowIdealLap; // Ideal lap to pit on for current strategy (player)
+            public byte pitStopWindowLatestLap; // Latest lap to pit on for current strategy (player)
+            public byte pitStopRejoinPosition; // Predicted position to rejoin at (player)
+            public byte steeringAssist; // 0 = off, 1 = on
+            public byte brakingAssist; // 0 = off, 1 = low, 2 = medium, 3 = high
+            public byte gearboxAssist; // 1 = manual, 2 = manual & suggested gear, 3 = auto
+            public byte pitAssist; // 0 = off, 1 = on
+            public byte pitReleaseAssist; // 0 = off, 1 = on
+            public byte ERSAssist; // 0 = off, 1 = on
+            public byte DRSAssist; // 0 = off, 1 = on
+            public byte dynamicRacingLine; // 0 = off, 1 = corners only, 2 = full
+            public byte dynamicRacingLineType; // 0 = 2D, 1 = 3D
+            public byte gameMode; // Game mode id - see appendix
+            public byte ruleSet; // Ruleset - see appendix
+            public uint timeOfDay; // Local time of day - minutes since midnight
+            public byte sessionLength; // 0 = None, 2 = Very Short, 3 = Short, 4 = Medium, 5 = Medium Long, 6 = Long, 7 = Full
+            public byte speedUnitsLeadPlayer; // 0 = MPH, 1 = KPH
+            public byte temperatureUnitsLeadPlayer; // 0 = Celsius, 1 = Fahrenheit
+            public byte speedUnitsSecondaryPlayer; // 0 = MPH, 1 = KPH
+            public byte temperatureUnitsSecondaryPlayer; // 0 = Celsius, 1 = Fahrenheit
+            public byte numSafetyCarPeriods; // Number of safety cars called during session
+            public byte numVirtualSafetyCarPeriods; // Number of virtual safety cars called
+            public byte numRedFlagPeriods; // Number of red flags called during session
+            public byte equalCarPerformance; // 0 = Off, 1 = On
+            public byte recoveryMode; // 0 = None, 1 = Flashbacks, 2 = Auto-recovery
+            public byte flashbackLimit; // 0 = Low, 1 = Medium, 2 = High, 3 = Unlimited
+            public byte surfaceType; // 0 = Simplified, 1 = Realistic
+            public byte lowFuelMode; // 0 = Easy, 1 = Hard
+            public byte raceStarts; // 0 = Manual, 1 = Assisted
+            public byte tyreTemperature; // 0 = Surface only, 1 = Surface & Carcass
+            public byte pitLaneTyreSim; // 0 = On, 1 = Off
+            public byte carDamage; // 0 = Off, 1 = Reduced, 2 = Standard, 3 = Simulation
+            public byte carDamageRate; // 0 = Reduced, 1 = Standard, 2 = Simulation
+            public byte collisions; // 0 = Off, 1 = Player-to-Player Off, 2 = On
+            public byte collisionsOffForFirstLapOnly; // 0 = Disabled, 1 = Enabled
+            public byte mpUnsafePitRelease; // 0 = On, 1 = Off (Multiplayer)
+            public byte mpOffForGriefing; // 0 = Disabled, 1 = Enabled (Multiplayer)
+            public byte cornerCuttingStringency; // 0 = Regular, 1 = Strict
+            public byte parcFermeRules; // 0 = Off, 1 = On
+            public byte pitStopExperience; // 0 = Automatic, 1 = Broadcast, 2 = Immersive
+            public byte safetyCar; // 0 = Off, 1 = Reduced, 2 = Standard, 3 = Increased
+            public byte safetyCarExperience; // 0 = Broadcast, 1 = Immersive
+            public byte formationLap; // 0 = Off, 1 = On
+            public byte formationLapExperience; // 0 = Broadcast, 1 = Immersive
+            public byte redFlags; // 0 = Off, 1 = Reduced, 2 = Standard, 3 = Increased
+            public byte affectsLicenceLevelSolo; // 0 = Off, 1 = On
+            public byte affectsLicenceLevelMP; // 0 = Off, 1 = On
+            public byte numSessionsInWeekend; // Number of session in following array
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 12)]
+            public byte[] weekendStructure; // List of session types to show weekend; structure - see appendix for types????????????????????????????????????????????
+            public float sector2LapDistanceStart; // Distance in m around track where sector 2 starts
+            public float sector3LapDistanceStart; // Distance in m around track where sector 3 starts
+        };
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        struct LapData
+        {//part of PacketLapData
+            public uint lastLapTimeInMS; // Last lap time in milliseconds
+            public uint currentLapTimeInMS; // Current time around the lap in milliseconds
+            public ushort sector1TimeMSPart; // Sector 1 time milliseconds part
+            public byte sector1TimeMinutesPart; // Sector 1 whole minute part
+            public ushort sector2TimeMSPart; // Sector 2 time milliseconds part
+            public byte sector2TimeMinutesPart; // Sector 2 whole minute part
+            public ushort deltaToCarInFrontMSPart; // Time delta to car in front milliseconds part
+            public byte deltaToCarInFrontMinutesPart; // Time delta to car in front whole minute part
+            public ushort deltaToRaceLeaderMSPart; // Time delta to race leader milliseconds part
+            public byte deltaToRaceLeaderMinutesPart; // Time delta to race leader whole minute part
+            public float lapDistance; // Distance vehicle is around current lap in metres – could be negative if line hasn’t been crossed yet
+            public float totalDistance; // Total distance travelled in session in metres – could be negative if line hasn’t been crossed yet
+            public float safetyCarDelta; // Delta in seconds for safety car
+            public byte carPosition; // Car race position
+            public byte currentLapNum; // Current lap number
+            public byte pitStatus; // 0 = none, 1 = pitting, 2 = in pit area
+            public byte numPitStops; // Number of pit stops taken in this race
+            public byte sector; // 0 = sector1, 1 = sector2, 2 = sector3
+            public byte currentLapInvalid; // Current lap invalid - 0 = valid, 1 = invalid
+            public byte penalties; // Accumulated time penalties in seconds to be added
+            public byte totalWarnings; // Accumulated number of warnings issued
+            public byte cornerCuttingWarnings; // Accumulated number of corner cutting warnings issued
+            public byte numUnservedDriveThroughPens; // Num drive through pens left to serve
+            public byte numUnservedStopGoPens; // Num stop go pens left to serve
+            public byte gridPosition; // Grid position the vehicle started the race in
+            public byte driverStatus; // Status of driver - 0 = in garage, 1 = flying lap, 2 = in lap, 3 = out lap, 4 = on track
+            public byte resultStatus; // Result status - 0 = invalid, 1 = inactive, 2 = active, 3 = finished, 4 = didnotfinish, 5 = disqualified, 6 = not classified, 7 = retired
+            public byte pitLaneTimerActive; // Pit lane timing, 0 = inactive, 1 = active
+            public ushort pitLaneTimeInLaneInMS; // If active, the current time spent in the pit lane in ms
+            public ushort pitStopTimerInMS; // Time of the actual pit stop in ms
+            public byte pitStopShouldServePen; // Whether the car should serve a penalty at this stop
+            public float speedTrapFastestSpeed; // Fastest speed through speed trap for this car in kmph
+            public byte speedTrapFastestLap; // Lap no the fastest speed was achieved, 255 = not set
+        };
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        struct PacketLapData
+        {//1285B
+            public PacketHeader header; // Header
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 22)]
+            public LapData[] lapData; // Lap data for all cars on track
+            public byte timeTrialPBCarIdx; // Index of Personal Best car in time trial (255 if invalid)
+            public byte timeTrialRivalCarIdx; // Index of Rival car in time trial (255 if invalid)
+        };
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct PacketEventData
+        {//45B
+            public PacketHeader header;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public byte[] eventStringCode;
+            public EventDataDetails eventDetails;
+        }
+        [StructLayout(LayoutKind.Explicit)]
+        public struct EventDataDetails
+        {// part of PacketEventData
+            [FieldOffset(0)] public FastestLap FastestLap;
+            [FieldOffset(0)] public Retirement Retirement;
+            [FieldOffset(0)] public TeamMateInPits TeamMateInPits;
+            [FieldOffset(0)] public RaceWinner RaceWinner;
+            [FieldOffset(0)] public Penalty Penalty;
+            [FieldOffset(0)] public SpeedTrap SpeedTrap;
+            [FieldOffset(0)] public StartLights StartLights;
+            [FieldOffset(0)] public DriveThroughPenaltyServed DriveThroughPenaltyServed;
+            [FieldOffset(0)] public StopGoPenaltyServed StopGoPenaltyServed;
+            [FieldOffset(0)] public Flashback Flashback;
+            [FieldOffset(0)] public Buttons Buttons;
+            [FieldOffset(0)] public Overtake Overtake;
+            [FieldOffset(0)] public SafetyCar SafetyCar;
+            [FieldOffset(0)] public Collision Collision;
+            /*
+             Session Started	“SSTA”	Sent when the session starts
+                Session Ended	“SEND”	Sent when the session ends
+                Fastest Lap	“FTLP”	When a driver achieves the fastest lap
+                Retirement	“RTMT”	When a driver retires
+                DRS enabled	“DRSE”	Race control have enabled DRS
+                DRS disabled	“DRSD”	Race control have disabled DRS
+                Team mate in pits	“TMPT”	Your team mate has entered the pits
+                Chequered flag	“CHQF”	The chequered flag has been waved
+                Race Winner	“RCWN”	The race winner is announced
+                Penalty Issued	“PENA”	A penalty has been issued – details in event
+                Speed Trap Triggered	“SPTP”	Speed trap has been triggered by fastest speed
+                Start lights	“STLG”	Start lights – number shown
+                Lights out	“LGOT”	Lights out
+                Drive through served	“DTSV”	Drive through penalty served
+                Stop go served	“SGSV”	Stop go penalty served
+                Flashback	“FLBK”	Flashback activated
+                Button status	“BUTN”	Button status changed
+                Red Flag	“RDFL”	Red flag shown
+                Overtake	“OVTK”	Overtake occurred
+                Safety Car	"SCAR"	Safety car event - details in event
+                Collision	"COLL"	Collision between two vehicles has occurred
+             */
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct FastestLap
+        {// part of EventDataDetails
+            public byte vehicleIdx;
+            public float lapTime;
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct Retirement
+        {// part of EventDataDetails
+            public byte vehicleIdx;
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct TeamMateInPits
+        {// part of EventDataDetails
+            public byte vehicleIdx;
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct RaceWinner
+        {// part of EventDataDetails
+            public byte vehicleIdx;
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct Penalty
+        {// part of EventDataDetails
+            public byte penaltyType;
+            public byte infringementType;
+            public byte vehicleIdx;
+            public byte otherVehicleIdx;
+            public byte time;
+            public byte lapNum;
+            public byte placesGained;
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct SpeedTrap
+        {// part of EventDataDetails
+            public byte vehicleIdx;
+            public float speed;
+            public byte isOverallFastestInSession;
+            public byte isDriverFastestInSession;
+            public byte fastestVehicleIdxInSession;
+            public float fastestSpeedInSession;
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct StartLights
+        {// part of EventDataDetails
+            public byte numLights;
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct DriveThroughPenaltyServed
+        {// part of EventDataDetails
+            public byte vehicleIdx;
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct StopGoPenaltyServed
+        {// part of EventDataDetails
+            public byte vehicleIdx;
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct Flashback
+        {// part of EventDataDetails
+            public uint flashbackFrameIdentifier;
+            public float flashbackSessionTime;
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct Buttons
+        {// part of EventDataDetails
+            public uint buttonStatus;
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct Overtake
+        {// part of EventDataDetails
+            public byte overtakingVehicleIdx;
+            public byte beingOvertakenVehicleIdx;
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct SafetyCar
+        {// part of EventDataDetails
+            public byte safetyCarType;
+            public byte eventType;
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct Collision
+        {// part of EventDataDetails
+            public byte vehicle1Idx;
+            public byte vehicle2Idx;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct ParticipantData
+        {//part of PacketParticipantsData
+            public byte aiControlled;         // 1 = AI, 0 = Human
+            public byte driverId;             // Driver ID
+            public byte networkId;            // Unique network ID
+            public byte teamId;               // Team ID
+            public byte myTeam;               // 1 = My Team
+            public byte raceNumber;           // Car number
+            public byte nationality;          // Nationality
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 48)]
+            public byte[] name;               // UTF-8 null-terminated name
+            public byte yourTelemetry;        // 0 = restricted, 1 = public
+            public byte showOnlineNames;      // 0 = off, 1 = on
+            public ushort techLevel;          // F1 World tech level
+            public byte platform;             // Platform ID
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct PacketParticipantsData
+        {//1350B
+            public PacketHeader header;       // Header
+            public byte numActiveCars;        // Number of active cars
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 22)]
+            public ParticipantData[] participants; // Array of 22 participants
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct CarSetupData
+        {//part of PacketCarSetupData
+            public byte frontWing;             // Front wing aero
+            public byte rearWing;              // Rear wing aero
+            public byte onThrottle;            // Diff on throttle
+            public byte offThrottle;           // Diff off throttle
+            public float frontCamber;          // Front camber angle
+            public float rearCamber;           // Rear camber angle
+            public float frontToe;             // Front toe angle
+            public float rearToe;              // Rear toe angle
+            public byte frontSuspension;       // Front suspension
+            public byte rearSuspension;        // Rear suspension
+            public byte frontAntiRollBar;      // Front anti-roll bar
+            public byte rearAntiRollBar;       // Rear anti-roll bar
+            public byte frontSuspensionHeight; // Front ride height
+            public byte rearSuspensionHeight;  // Rear ride height
+            public byte brakePressure;         // Brake pressure %
+            public byte brakeBias;             // Brake bias %
+            public byte engineBraking;         // Engine braking %
+            public float rearLeftTyrePressure; // Rear left tyre pressure
+            public float rearRightTyrePressure;// Rear right tyre pressure
+            public float frontLeftTyrePressure;// Front left tyre pressure
+            public float frontRightTyrePressure;// Front right tyre pressure
+            public byte ballast;               // Ballast
+            public float fuelLoad;             // Fuel load
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct PacketCarSetupData
+        {//113B
+            public PacketHeader header;       // Header
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 22)]
+            public CarSetupData[] carSetups;  // 22 cars' setups
+            public float nextFrontWingValue;  // Front wing value after next pit stop
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct CarTelemetryData
+        {//part of PacketCarTelemetryData
+            public ushort speed;                    // Speed of car in kilometres per hour
+            public float throttle;                  // Amount of throttle applied (0.0 to 1.0)
+            public float steer;                     // Steering (-1.0 (full lock left) to 1.0 (full lock right))
+            public float brake;                     // Amount of brake applied (0.0 to 1.0)
+            public byte clutch;                     // Amount of clutch applied (0 to 100)
+            public sbyte gear;                      // Gear selected (1-8, N=0, R=-1)
+            public ushort engineRPM;                // Engine RPM
+            public byte drs;                        // 0 = off, 1 = on
+            public byte revLightsPercent;           // Rev lights indicator (percentage)
+            public ushort revLightsBitValue;        // Rev lights (bit 0 = leftmost LED, bit 14 = rightmost LED)
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public ushort[] brakesTemperature;      // Brakes temperature (celsius)
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public byte[] tyresSurfaceTemperature;  // Tyres surface temperature (celsius)
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public byte[] tyresInnerTemperature;    // Tyres inner temperature (celsius)
+            public ushort engineTemperature;        // Engine temperature (celsius)
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public float[] tyresPressure;           // Tyres pressure (PSI)
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public byte[] surfaceType;              // Driving surface, see appendices
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct PacketCarTelemetryData
+        {//1352B
+            public PacketHeader header;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 22)]
+            public CarTelemetryData[] carTelemetryData;
+            public byte mfdPanelIndex;                   // 0–4 or 255
+            public byte mfdPanelIndexSecondaryPlayer;    // 0–4 or 255
+            public sbyte suggestedGear;                  // -1, 0 = none, 1–8
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct CarStatusData
+        {//part of PacketCarStatusData
+            public byte tractionControl;              // 0 = off, 1 = medium, 2 = full
+            public byte antiLockBrakes;               // 0 = off, 1 = on
+            public byte fuelMix;                      // 0 = lean, 1 = standard, 2 = rich, 3 = max
+            public byte frontBrakeBias;               // percentage
+            public byte pitLimiterStatus;             // 0 = off, 1 = on
+            public float fuelInTank;                  // fuel mass
+            public float fuelCapacity;                // fuel capacity
+            public float fuelRemainingLaps;           // laps of fuel remaining
+            public ushort maxRPM;                     // max engine RPM
+            public ushort idleRPM;                    // idle RPM
+            public byte maxGears;                     // max gear count
+            public byte drsAllowed;                   // 0 = not allowed, 1 = allowed
+            public ushort drsActivationDistance;      // 0 = not available, else in meters
+            public byte actualTyreCompound;           // compound code
+            public byte visualTyreCompound;           // visual compound
+            public byte tyresAgeLaps;                 // age of tyres in laps
+            public sbyte vehicleFiaFlags;             // -1 = invalid, 0 = none, 1 = green, 2 = blue, 3 = yellow
+            public float enginePowerICE;              // W
+            public float enginePowerMGUK;             // W
+            public float ersStoreEnergy;              // ERS in Joules
+            public byte ersDeployMode;                // 0 = none, 1 = medium, 2 = hotlap, 3 = overtake
+            public float ersHarvestedThisLapMGUK;     // harvested this lap by MGU-K
+            public float ersHarvestedThisLapMGUH;     // harvested this lap by MGU-H
+            public float ersDeployedThisLap;          // deployed this lap
+            public byte networkPaused;                // 1 = paused
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct PacketCarStatusData
+        {//1239B
+            public PacketHeader header;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 22)]
+            public CarStatusData[] carStatusData;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct FinalClassificationData
+        {//part of PacketFinalClassificationData
+            public byte position;                      // Finishing position
+            public byte numLaps;                       // Laps completed
+            public byte gridPosition;                  // Starting grid position
+            public byte points;                        // Points scored
+            public byte numPitStops;                   // Number of pit stops
+            public byte resultStatus;                  // Status of result (0-7)
+            public uint bestLapTimeInMS;               // Best lap in ms
+            public double totalRaceTime;               // Total race time (s)
+            public byte penaltiesTime;                 // Total penalties (s)
+            public byte numPenalties;                  // Count of penalties
+            public byte numTyreStints;                 // Total tyre stints
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 8)]
+            public byte[] tyreStintsActual;            // Actual tyre types used
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 8)]
+            public byte[] tyreStintsVisual;            // Visual tyre types
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 8)]
+            public byte[] tyreStintsEndLaps;           // Lap each stint ended on
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct PacketFinalClassificationData
+        {//1020B
+            public PacketHeader header;
+            public byte numCars; // Number of cars classified
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 22)]
+            public FinalClassificationData[] classificationData;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct LobbyInfoData
+        {//part of PacketLobbyInfoData
+            public byte aiControlled;             // 1 = AI, 0 = Human
+            public byte teamId;                   // 255 = no team
+            public byte nationality;              // Nationality ID
+            public byte platform;                 // Platform ID
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 48)]
+            public byte[] name;                   // UTF-8 name, null-terminated
+            public byte carNumber;                // Car number
+            public byte yourTelemetry;           // 0 = restricted, 1 = public
+            public byte showOnlineNames;         // 0 = off, 1 = on
+            public ushort techLevel;             // F1 World tech level
+            public byte readyStatus;             // 0 = not ready, 1 = ready, 2 = spectating
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct PacketLobbyInfoData
+        {//1306B
+            public PacketHeader header;
+            public byte numPlayers; // Number of players in lobby
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 22)]
+            public LobbyInfoData[] lobbyPlayers;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct CarDamageData
+        {//part of PacketCarDamageData
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public float[] tyresWear;             // Percentage (0.0 to 1.0)
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public byte[] tyresDamage;            // Percentage (0 to 100)
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public byte[] brakesDamage;           // Percentage (0 to 100)
+            public byte frontLeftWingDamage;      // Percentage
+            public byte frontRightWingDamage;     // Percentage
+            public byte rearWingDamage;           // Percentage
+            public byte floorDamage;              // Percentage
+            public byte diffuserDamage;           // Percentage
+            public byte sidepodDamage;            // Percentage
+            public byte drsFault;                 // 0 = OK, 1 = fault
+            public byte ersFault;                 // 0 = OK, 1 = fault
+            public byte gearBoxDamage;            // Percentage
+            public byte engineDamage;             // Percentage
+            public byte engineMGUHWear;           // Percentage
+            public byte engineESWear;             // Percentage
+            public byte engineCEWear;             // Percentage
+            public byte engineICEWear;            // Percentage
+            public byte engineMGUKWear;           // Percentage
+            public byte engineTCWear;             // Percentage
+            public byte engineBlown;              // 0 = OK, 1 = fault
+            public byte engineSeized;             // 0 = OK, 1 = fault
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct PacketCarDamageData
+        {//953B
+            public PacketHeader header;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 22)]
+            public CarDamageData[] carDamageData;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct LapHistoryData
+        {//part of PacketSessionHistoryData
+            public uint lapTimeInMS;               // Lap time in milliseconds
+            public ushort sector1TimeInMS;         // Sector 1 time in ms
+            public byte sector1TimeMinutes;        // Sector 1 whole minutes
+            public ushort sector2TimeInMS;         // Sector 2 time in ms
+            public byte sector2TimeMinutes;        // Sector 2 whole minutes
+            public ushort sector3TimeInMS;         // Sector 3 time in ms
+            public byte sector3TimeMinutes;        // Sector 3 whole minutes
+            public byte lapValidBitFlags;          // Bit flags for valid lap/sector
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct TyreStintHistoryData
+        {//part of PacketSessionHistoryData
+            public byte endLap;                    // 255 = current tyre
+            public byte tyreActualCompound;        // Actual compound
+            public byte tyreVisualCompound;        // Visual compound
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct PacketSessionHistoryData
+        {//1460B
+            public PacketHeader header;
+            public byte carIdx;                    // Index of car
+            public byte numLaps;                   // Total laps (including current)
+            public byte numTyreStints;             // Total stints
+            public byte bestLapTimeLapNum;         // Lap of best lap
+            public byte bestSector1LapNum;         // Lap of best sector 1
+            public byte bestSector2LapNum;         // Lap of best sector 2
+            public byte bestSector3LapNum;         // Lap of best sector 3
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 100)]
+            public LapHistoryData[] lapHistoryData;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 8)]
+            public TyreStintHistoryData[] tyreStintsHistoryData;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct TyreSetData
+        {//part of PacketTyreSetsData
+            public byte actualTyreCompound;         // Actual compound
+            public byte visualTyreCompound;         // Visual compound
+            public byte wear;                       // Wear percentage
+            public byte available;                  // 1 = available
+            public byte recommendedSession;         // Recommended session
+            public byte lifeSpan;                   // Laps remaining
+            public byte usableLife;                 // Max laps suggested
+            public short lapDeltaTime;              // Delta time (ms)
+            public byte fitted;                     // 1 = fitted
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct PacketTyreSetsData
+        {//231B
+            public PacketHeader header;
+            public byte carIdx;                     // Car index
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 20)]
+            public TyreSetData[] tyreSetData;       // 20 tyre sets
+            public byte fittedIdx;                  // Index of fitted set
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct PacketMotionExData
+        {//237B
+            public PacketHeader header;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public float[] suspensionPosition;        // RL, RR, FL, FR
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public float[] suspensionVelocity;        // RL, RR, FL, FR
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public float[] suspensionAcceleration;    // RL, RR, FL, FR
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public float[] wheelSpeed;                // Speed of each wheel
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public float[] wheelSlipRatio;            // Slip ratio of each wheel
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public float[] wheelSlipAngle;            // Slip angle of each wheel
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public float[] wheelLatForce;             // Lateral force of each wheel
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public float[] wheelLongForce;            // Longitudinal force of each wheel
+            public float heightOfCOGAboveGround;
+            public float localVelocityX;
+            public float localVelocityY;
+            public float localVelocityZ;
+            public float angularVelocityX;
+            public float angularVelocityY;
+            public float angularVelocityZ;
+            public float angularAccelerationX;
+            public float angularAccelerationY;
+            public float angularAccelerationZ;
+            public float frontWheelsAngle;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public float[] wheelVertForce;            // Vertical force per wheel
+            public float frontAeroHeight;
+            public float rearAeroHeight;
+            public float frontRollAngle;
+            public float rearRollAngle;
+            public float chassisYaw;
+        }
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct TimeTrialDataSet
+        {//part of PacketTimeTrialData
+            public byte carIdx;                   // Car index
+            public byte teamId;                   // Team ID
+            public uint lapTimeInMS;              // Lap time in milliseconds
+            public uint sector1TimeInMS;          // Sector 1 time
+            public uint sector2TimeInMS;          // Sector 2 time
+            public uint sector3TimeInMS;          // Sector 3 time
+            public byte tractionControl;          // 0 = off, 1 = medium, 2 = full
+            public byte gearboxAssist;            // 1 = manual, 2 = manual+suggested, 3 = auto
+            public byte antiLockBrakes;           // 0 = off, 1 = on
+            public byte equalCarPerformance;      // 0 = Realistic, 1 = Equal
+            public byte customSetup;              // 0 = No, 1 = Yes
+            public byte valid;                    // 0 = invalid, 1 = valid
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct PacketTimeTrialData
+        {//101B
+            public PacketHeader header;
+            public TimeTrialDataSet playerSessionBestDataSet;
+            public TimeTrialDataSet personalBestDataSet;
+            public TimeTrialDataSet rivalDataSet;
+        }
+    }
+}
