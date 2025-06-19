@@ -14,7 +14,7 @@
                 align-content: center;
                 text-align: center;
                 background: #222;
-                color: #fff;
+                color: #eee;
             }
             #header {
                 font-family: 'Digital';
@@ -118,6 +118,75 @@
                 margin-top: -20px;
                 color: orange;
             }
+            .sessionDataDisplay {
+                position: relative;
+                top: -800px;
+            }
+            .rouletteContainer {
+                position: relative;
+                width: 600px;
+                height: 59px;
+                overflow: hidden;
+                border-radius: 8px;
+                box-shadow: 0 0 15px #000;
+                background-color: #222;
+            }
+            .rouletteTable {
+                transition: transform 0.5s ease-in-out;
+                position: absolute;
+                width: 100%;
+            }
+            .rouletteRow {
+                justify-content: space-between;
+                display: flex;
+                padding: 16px 24px;
+                box-sizing: border-box;
+                width: 100%;
+                height: 60px;
+                border-bottom: 1px solid #333;
+                background: #222;
+                color: #eee;
+            }
+            .rouletteRow:not(:nth-child(1)) {
+                box-shadow: 0 -20px 20px -20px #000 inset;
+            }
+            .rouletteRow.next {
+                box-shadow: 0 20px 20px -20px #000 inset;
+            }
+            button {
+                position: relative;
+                background: #444;
+                color: #fff;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                cursor: pointer;
+            }
+            button:hover {
+                color: #666;
+            }
+            .buttons {
+                position: absolute;
+                align-items: center;
+                gap: 12px;
+                margin: 0 220px;
+            }
+            .scrollUp {
+                background: transparent;
+                height: 29px;
+                color: #eee;
+                top: -11px;
+                left: 90px;
+                font-size: 20px;
+            }
+            .scrollDown {
+                background: transparent;
+                height: 29px;
+                color: #eee;
+                top: -11px;
+                left: 80px;
+                font-size: 20px;
+            }
         </style>
     </head>
     <body>
@@ -134,8 +203,104 @@
             <div id="steeringBar"></div>
         </div>
         <div id="steeringLabel">Steering</div>
-
+        <div class="sessionDataDisplay">
+            <div class="rouletteContainer">
+                <div id="rouletteTable" class="rouletteTable">
+                    <div class="rouletteRow">
+                        <strong>Weather</strong>
+                        <span>-----</span>
+                        <span class="buttons">
+                            <button id="scrollUpArrow" class="scrollUp" onclick="scrollUp()">⇑</button>
+                            <button id="scrollDownArrow" class="scrollDown" onclick="scrollDown()">⇓</button>
+                        </span>
+                    </div>
+                    <div class="rouletteRow">
+                        <strong>Track Temp</strong>
+                        <span>--°C</span>
+                        <span class="buttons">
+                            <button id="scrollUpArrow" class="scrollUp" onclick="scrollUp()">⇑</button>
+                            <button id="scrollDownArrow" class="scrollDown" onclick="scrollDown()">⇓</button>
+                        </span>
+                    </div>
+                    <div class="rouletteRow">
+                        <strong>Air Temp</strong>
+                        <span>--°C</span>
+                        <span class="buttons">
+                            <button id="scrollUpArrow" class="scrollUp" onclick="scrollUp()">⇑</button>
+                            <button id="scrollDownArrow" class="scrollDown" onclick="scrollDown()">⇓</button>
+                        </span>
+                    </div>
+                    <div class="rouletteRow">
+                        <strong>Total Laps</strong>
+                        <span>--</span>
+                        <span class="buttons">
+                            <button id="scrollUpArrow" class="scrollUp" onclick="scrollUp()">⇑</button>
+                            <button id="scrollDownArrow" class="scrollDown" onclick="scrollDown()">⇓</button>
+                        </span>
+                    </div>
+                    <div class="rouletteRow">
+                        <strong>Track Length</strong>
+                        <span>----m</span>
+                        <span class="buttons">
+                            <button id="scrollUpArrow" class="scrollUp" onclick="scrollUp()">⇑</button>
+                            <button id="scrollDownArrow" class="scrollDown" onclick="scrollDown()">⇓</button>
+                        </span>
+                    </div>
+                    <div class="rouletteRow">
+                        <strong>Time Left</strong>
+                        <span>--m--s</span>
+                        <span class="buttons">
+                            <button id="scrollUpArrow" class="scrollUp" onclick="scrollUp()">⇑</button>
+                            <button id="scrollDownArrow" class="scrollDown" onclick="scrollDown()">⇓</button>
+                        </span>
+                    </div>
+                    <div class="rouletteRow">
+                        <strong>Duration</strong>
+                        <span>--m--s</span>
+                        <span class="buttons">
+                            <button id="scrollUpArrow" class="scrollUp" onclick="scrollUp()">⇑</button>
+                            <button id="scrollDownArrow" class="scrollDown" onclick="scrollDown()">⇓</button>
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </div>
         <script>
+            const table = document.getElementById('rouletteTable');
+            const rowHeight = 60;
+            let currentIndex = 0;
+            const totalRows = table.children.length;
+            const interval = setInterval(function() {
+                    if (currentIndex === totalRows - 1) {
+                        currentIndex = -1;
+                    }
+                    if (currentIndex < totalRows - 1) {
+                        currentIndex++;
+                    }
+                    updateScroll();
+                }, 3000
+            );
+            function updateScroll() {
+                table.style.transform = `translateY(-${currentIndex * rowHeight}px)`;
+            }
+            function scrollDown() {
+                if (currentIndex === totalRows - 1) {
+                    currentIndex = -1;
+                }
+                if (currentIndex < totalRows - 1) {
+                    currentIndex++;
+                }
+                updateScroll();
+            }
+            function scrollUp() {
+                if (currentIndex === 0) {
+                    currentIndex = totalRows;
+                }
+                if (currentIndex > 0) {
+                    currentIndex--;
+                }
+                updateScroll();
+            }
             const socket = new WebSocket('ws://localhost:3000');
             const dpr = window.devicePixelRatio || 1;
             const logicalWidth = 800;
@@ -256,7 +421,7 @@
                     drs.style.color = '#000';
                 } else {
                     drs.style.background = 'transparent';
-                    drs.style.color = '#fff';
+                    drs.style.color = '#eee';
                 }
                 let gearText = data.gear === 0 ? 'N' : data.gear === -1 ? 'R' : data.gear;
                 document.getElementById('gear').textContent = `Gear ${gearText}`;
