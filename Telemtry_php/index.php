@@ -9,153 +9,248 @@
                 font-style: normal;
             }
             body {
+                font-family: 'Digital';
+                position: relative;
+                align-content: center;
+                text-align: center;
                 background: #222;
                 color: #fff;
-                font-family: 'Digital', sans-serif;
-                text-align: center;
-            }
-            canvas {
-                background: transparent;
-                border-radius: 50%;
-                font-family: 'Digital', sans-serif;
-                margin-top: 20px;
             }
             #header {
-                margin-top: 10px;
+                font-family: 'Digital';
+                position: relative;
+                align-content: center;
+                top: 10px;
             }
-            #drs {
-                height: 23px;
-                width: 100px;
-                margin: -70px auto;
-                font-size: 20px;
-                font-weight: bold;
-                padding: 5px 20px;
-                border-radius: 5px;
-                font-family: 'Digital', sans-serif;
+            canvas {
+                font-family: 'Digital';
+                position: relative;
+                align-content: center;
+                height: 500px;
+                width: 800px;
+                background: transparent;
+                border-radius: 50%;
+            }
+            #staticCanvas {
+                left : 400px;
+                z-index: 0;
+            }
+            #dynamicCanvas {
+                top : -1px;
+                left : -406px;
+                z-index: 1;
+            }
+            #speed {
+                font-family: 'Digital';
+                position: relative;
+                align-content: center;
+                top: -330px;
+                font-size: 40px;
+            }
+            #kmh {
+                font-family: 'Digital';
+                position: relative;
+                align-content: center;
+                top: -320px;
+            }
+            #engineRPM {
+                font-family: 'Digital';
+                position: relative;
+                align-content: center;
+                top: -310px;
+                font-size: 32px;
+            }
+            #rpm {
+                font-family: 'Digital';
+                position: relative;
+                align-content: center;
+                top: -302px;
             }
             #gear {
+                font-family: 'Digital';
+                position: relative;
+                align-content: center;
+                top: -355px;
                 height: 23px;
-                width: 100px;
-                margin: 70px auto;
+                width: 110px;
                 font-size: 20px;
+                margin: 70px auto;
                 font-weight: bold;
                 padding: 5px 20px;
                 border-radius: 5px;
-                font-family: 'Digital', sans-serif;
+            }
+            #drs {
+                font-family: 'Digital';
+                position: relative;
+                align-content: center;
+                top: -300px;
+                height: 23px;
+                width: 100px;
+                font-size: 20px;
+                font-weight: bold;
+                margin: -70px auto;
+                padding: 5px 20px;
+                border-radius: 5px;
             }
             #steeringBarContainer {
-                width: 400px;
+                position: relative;
+                align-content: center;
+                top: -120px;
                 height: 20px;
+                width: 400px;
                 background: #333;
                 margin: 40px auto;
-                position: relative;
                 border-radius: 10px;
             }
             #steeringBar {
+                position: absolute;
+                align-content: center;
+                top: 0;
                 height: 100%;
                 background: orange;
-                position: absolute;
-                top: 0;
             }
             #steeringLabel {
-                margin-top: -20px;
+                font-family: 'Digital';
+                position: relative;
+                align-content: center;
+                top: -130px;
                 font-size: 20px;
-                color: #aaa;
+                margin-top: -20px;
+                color: orange;
             }
         </style>
     </head>
     <body>
         <h1 id="header">Telemetry Dashboard</h1>
-        <canvas id="telemetryCanvas"  width="800" height="500"></canvas>
-
+        <canvas id="staticCanvas"></canvas>
+        <canvas id="dynamicCanvas"></canvas>
+        <div id="speed">---</div>
+        <div id="kmh">KMH</div>
+        <div id="engineRPM">-----</div>
+        <div id="rpm">RPM</div>
+        <div id="gear">Gear -</div>
         <div id="drs">DRS</div>
-        <div id="gear">Gear 0</div>
-
         <div id="steeringBarContainer">
             <div id="steeringBar"></div>
         </div>
-        <div id="steeringLabel">Steer 0.00</div>
+        <div id="steeringLabel">Steering</div>
 
-        <!-- don't forget to add columns to the mySQL Query as the dashboard gets bigger -->
         <script>
             const socket = new WebSocket('ws://localhost:3000');
-
-            const canvas = document.getElementById('telemetryCanvas');
-            const ctx = canvas.getContext('2d');
             const dpr = window.devicePixelRatio || 1;
-
             const logicalWidth = 800;
             const logicalHeight = 500;
+/* debug * let dataBase = { speed : 360, throttle : 1, brake : 1, engineRPM : 13500, drs : 1, gear : 8, steer : 1 }*/
+            const staticCanvas = document.getElementById('staticCanvas');
+            const ctxStatic = staticCanvas.getContext('2d');
+            staticCanvas.height = logicalHeight * dpr;
+            staticCanvas.width = logicalWidth * dpr;
+            ctxStatic.scale(dpr, dpr);
 
-            canvas.width = logicalWidth * dpr;
-            canvas.height = logicalHeight * dpr;
-            canvas.style.width = logicalWidth + 'px';
-            canvas.style.height = logicalHeight + 'px';
-            ctx.scale(dpr, dpr);
+            const dynamicCanvas = document.getElementById('dynamicCanvas');
+            const ctxDynamic = dynamicCanvas.getContext('2d');
+            dynamicCanvas.height = logicalHeight * dpr;
+            dynamicCanvas.width = logicalWidth * dpr;
+            ctxDynamic.scale(dpr, dpr);
 
             const centerX = logicalWidth / 2;
             const centerY = logicalHeight / 2;
-            const radius_spd = 200;
-            const radius_tb = 150;
+            const radiusSpeed = 200;
+            const radiusThrottle = 150;
+            const radiusBrake = 150;
+            // statics in the dynamic
+            const degToRad = d => d * Math.PI / 180;
+            const baseAngle = Math.PI * 0.66;
+            const fullCircle = Math.PI * 1.68;
+            const fullCircle_tb = Math.PI * 0.97;
+            const thick = 40;
+            const size = 40;
+            const brakeStart = degToRad(60);
+            const throttleStart = degToRad(120);
+            const drs = document.getElementById('drs');
+            const bar = document.getElementById('steeringBar');
+            const label = document.getElementById('steeringLabel');
+            const halfWidth = 200;
+            // end
+            const speedArcs = new Map();
+            for (let speed = 0; speed <= 360; speed++) {
+                const offCanvas = document.createElement('canvas');
+                const offCtx = offCanvas.getContext('2d');
+                offCanvas.height = logicalHeight * dpr;
+                offCanvas.width = logicalWidth * dpr;
+                offCtx.translate(-3, -5);
+                offCtx.beginPath();
+                offCtx.arc(centerX, centerY, radiusSpeed, Math.PI * 0.66, Math.PI * 0.66 + (speed / 360) * Math.PI * 1.68);
+                offCtx.strokeStyle = '#005eed';
+                offCtx.lineWidth = thick;
+                offCtx.lineCap = 'round';
+                offCtx.stroke();
+                speedArcs.set(speed, offCanvas);
+            }
+            const drawSpeedArc = (currentSpeed) => {
+                const speed = Math.floor(currentSpeed);
+                const canvasSpeedArc = speedArcs.get(speed);
+                const speedAngle = baseAngle + (speed / 360) * fullCircle;
+                ctxDynamic.drawImage(canvasSpeedArc, baseAngle, speedAngle)
 
-            const drawArc_spd = (start, end, color, thickness) => {
-                ctx.beginPath();
-                ctx.arc(centerX, centerY, radius_spd, start, end);
-                ctx.strokeStyle = color;
-                ctx.lineWidth = thickness;
-                ctx.lineCap = 'round';
-                ctx.stroke();
             };
-
-            const drawArc_tb = (start, end, color, thickness) => {
-                ctx.beginPath();
-                ctx.arc(centerX, centerY, radius_tb, start, end);
-                ctx.strokeStyle = color;
-                ctx.lineWidth = thickness;
-                ctx.lineCap = 'round';
-                ctx.stroke();
+            const drawSpeedBackgroundArc = (start, end, color, thickness) => {
+                ctxStatic.beginPath();
+                ctxStatic.arc(centerX, centerY, radiusSpeed, start, end);
+                ctxStatic.strokeStyle = color;
+                ctxStatic.lineWidth = thickness;
+                ctxStatic.lineCap = 'round';
+                ctxStatic.stroke();
             };
-
-            const drawText = (text, y, size = 30) => {
-                ctx.font = `${size}px Digital`;
-                ctx.fillStyle = '#fff';
-                ctx.textAlign = 'center';
-                ctx.fillText(text, centerX, y);
+            const drawThrottleArc = (start, end, color, thickness) => {
+                ctxDynamic.beginPath();
+                ctxDynamic.arc(centerX, centerY, radiusThrottle, start, end);
+                ctxDynamic.strokeStyle = color;
+                ctxDynamic.lineWidth = thickness;
+                ctxDynamic.lineCap = 'round';
+                ctxDynamic.stroke();
             };
-
+            const drawThrottleBackgroundArc = (start, end, color, thickness) => {
+                ctxStatic.beginPath();
+                ctxStatic.arc(centerX, centerY, radiusThrottle, start, end);
+                ctxStatic.strokeStyle = color;
+                ctxStatic.lineWidth = thickness;
+                ctxStatic.lineCap = 'round';
+                ctxStatic.stroke();
+            };
+            const drawBrakeArc = (start, end, color, thickness) => {
+                ctxDynamic.beginPath();
+                ctxDynamic.arc(centerX, centerY, radiusBrake, start, end);
+                ctxDynamic.strokeStyle = color;
+                ctxDynamic.lineWidth = thickness;
+                ctxDynamic.lineCap = 'round';
+                ctxDynamic.stroke();
+            };
+            const drawBrakeBackgroundArc = (start, end, color, thickness) => {
+                ctxStatic.beginPath();
+                ctxStatic.arc(centerX, centerY, radiusBrake, start, end);
+                ctxStatic.strokeStyle = color;
+                ctxStatic.lineWidth = thickness;
+                ctxStatic.lineCap = 'round';
+                ctxStatic.stroke();
+            };
+            drawSpeedBackgroundArc(baseAngle, baseAngle + fullCircle, '#0a6efd22', thick);
+            drawThrottleBackgroundArc(throttleStart, throttleStart + fullCircle_tb, '#32CD3222', thick);
+            drawBrakeBackgroundArc(brakeStart - fullCircle_tb + degToRad(70), brakeStart, '#DD222222', thick);
             function renderTelemetry(data) {
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctxDynamic.clearRect(0, 0, dynamicCanvas.width, dynamicCanvas.height)
+                drawSpeedArc(data.speed);
 
-                const degToRad = d => d * Math.PI / 180;
-                const baseAngle = Math.PI * 0.66;
-                const fullCircle = Math.PI * 1.68;
-                const fullCircle_tb = Math.PI * 0.97;
-                const thick = 40;
-                const size = 40;
-
-                drawArc_spd(baseAngle, baseAngle + fullCircle, '#0a6efd22', thick);
-                const speedAngle = baseAngle + (data.speed / 360) * fullCircle;
-                drawArc_spd(baseAngle, speedAngle, '#005eed', thick);
-
-                const throttleStart = degToRad(120);
                 const throttleEnd = throttleStart + data.throttle * degToRad(174.5);
-                drawArc_tb(throttleStart, throttleStart + fullCircle_tb, '#32CD3222', thick);
-                drawArc_tb(throttleStart, throttleEnd, '#22BD22', thick);
+                drawThrottleArc(throttleStart, throttleEnd, '#22BD22', thick);
 
-                const brakeStart = degToRad(60);
                 const brakeEnd = brakeStart - data.brake * degToRad(104.5);
-                drawArc_tb(brakeStart - fullCircle_tb + degToRad(70), brakeStart, '#DD222222', thick);
-                drawArc_tb(brakeEnd, brakeStart, '#CD1212', thick);
+                drawBrakeArc(brakeEnd, brakeStart, '#CD1212', thick);
 
-                drawText(`${Math.round(data.speed)}`, centerY - 15, size);
-                drawText('KMH', centerY + 5, size * 0.3);
-                drawText(`${data.engineRPM}`, centerY + 50, size * 0.7);
-                drawText('RPM', centerY + 70, size * 0.3);
+                document.getElementById('speed').textContent = `${Math.floor(data.speed)}`;
 
-                let gearText = data.gear === 0 ? 'N' : data.gear === -1 ? 'R' : data.gear;
-                document.getElementById('gear').textContent = `Gear ${gearText}`;
+                document.getElementById('engineRPM').textContent = `${data.engineRPM}`;
 
-                const drs = document.getElementById('drs');
                 if (data.drs === 1) {
                     drs.style.background = '#42DD42';
                     drs.style.color = '#000';
@@ -163,11 +258,8 @@
                     drs.style.background = 'transparent';
                     drs.style.color = '#fff';
                 }
-
-                const bar = document.getElementById('steeringBar');
-                const label = document.getElementById('steeringLabel');
-                const containerWidth = document.getElementById('steeringBarContainer').offsetWidth;
-                const halfWidth = containerWidth / 2;
+                let gearText = data.gear === 0 ? 'N' : data.gear === -1 ? 'R' : data.gear;
+                document.getElementById('gear').textContent = `Gear ${gearText}`;
 
                 const steerNormalized = Math.max(-1, Math.min(1, data.steer));
                 if (steerNormalized >= 0) {
@@ -177,12 +269,20 @@
                     bar.style.left = (halfWidth + steerNormalized * halfWidth) + 'px';
                     bar.style.width = (-halfWidth * steerNormalized) + 'px';
                 }
-                label.textContent = `Steer ${steerNormalized.toFixed(2)}`;
             }
+/* debug * renderTelemetry(dataBase);*/
             socket.onmessage = (event) => {
-                console.log("RECEIVED DATA:", event.data);
-                const data = JSON.parse(event.data);
-                renderTelemetry(data);
+                const dataBase = JSON.parse(event.data);
+                /* currently using:
+                *   telemetryCarTelemetryData.speed
+                *   telemetryCarTelemetryData.throttle
+                *   telemetryCarTelemetryData.steer
+                *   telemetryCarTelemetryData.brake
+                *   telemetryCarTelemetryData.gear
+                *   telemetryCarTelemetryData.engineRPM
+                *   telemetryCarTelemetryData.drs
+                */
+                renderTelemetry(dataBase);
             };
             setInterval(() => {
                 if (socket.readyState === WebSocket.OPEN) {

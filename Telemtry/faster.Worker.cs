@@ -1,18 +1,34 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Net.WebSockets;
+using System.Text;
+using System.Text.Json;
 using MySqlConnector;
-
 
 namespace Telemtry
 {
     public class Worker : BackgroundService
     {
+        private ClientWebSocket _webSocket;
+        private readonly Uri _webSocketUri = new("ws://telemtry-websocket:3000");
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             using var client = new UdpClient(20777);
             var connectionString = "Server=db;Port=3306;Database=telemetry;User=user;Password=pass;";
 
+            _webSocket = new ClientWebSocket();
+            try
+            {
+                await _webSocket.ConnectAsync(_webSocketUri, stoppingToken);
+                Console.WriteLine("Connected to WebSocket server.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"WebSocket connection failed: {ex.Message}");
+            }
+            List<CarTelemetryData> carTelemetryDataBatch = new();
+            int batchSize = 20;
             while (!stoppingToken.IsCancellationRequested)
             {
                 UdpReceiveResult result = await client.ReceiveAsync();
@@ -46,7 +62,7 @@ namespace Telemtry
                     secondaryPlayerCarIndex = br.ReadByte()
                 };
 
-                // Then read all carsâ€™ telemetry data (22 total)
+                // Then read all cars’ telemetry data (22 total)
                 CarTelemetryData[] carsData = new CarTelemetryData[22];
                 for (int i = 0; i < 22; i++)
                 {
@@ -58,10 +74,24 @@ namespace Telemtry
                 byte mfdPanelIndexSecondaryPlayer = br.ReadByte();
                 sbyte suggestedGear = br.ReadSByte();
 
-                // Now you can use the telemetry data for the **playerâ€™s car**:
+                // Now you can use the telemetry data for the **player’s car**:
                 var playerIndex = header.playerCarIndex;
                 var data = carsData[playerIndex];
 
+                if (_webSocket.State == WebSocketState.Open)
+                {
+                    var json = JsonSerializer.Serialize(data);
+                    var bytes = Encoding.UTF8.GetBytes(json);
+                    var buffer = new ArraySegment<byte>(bytes);
+                    await _webSocket.SendAsync(buffer, WebSocketMessageType.Text, true, stoppingToken);
+                    // Send heartbeat
+                    var pingBuffer = new ArraySegment<byte>(Encoding.UTF8.GetBytes("__ping__"));
+                    await _webSocket.SendAsync(pingBuffer, WebSocketMessageType.Text, true, stoppingToken);
+                } else
+                {
+                    Console.WriteLine($"WebSocket not open: {_webSocket.State}");
+                }
+                /*
                 Console.WriteLine(
                     $"Spd:{data.speed} | " +
                     $"Thr:{data.throttle:0.00} | " +
@@ -80,10 +110,35 @@ namespace Telemtry
                     $"TP:{string.Join(",", data.tyresPressure.Select(p => p.ToString("0.00")))} | " +
                     $"ST:{string.Join(",", data.surfaceType)}"
                 );
+                */
                 using var conn = new MySqlConnection(connectionString);
                 await conn.OpenAsync();
 
-                using var cmd = new MySqlCommand(@"
+                carTelemetryDataBatch.Add(data);
+
+                if (carTelemetryDataBatch.Count >= batchSize)
+                {
+                    await InsertTelemetryBatchAsync(carTelemetryDataBatch, connectionString, stoppingToken);
+                    carTelemetryDataBatch.Clear();
+                }
+            }
+            if (carTelemetryDataBatch.Count > 0)
+            {
+                await InsertTelemetryBatchAsync(carTelemetryDataBatch, connectionString, stoppingToken);
+                carTelemetryDataBatch.Clear();
+            }
+        }
+        private async Task InsertTelemetryBatchAsync(List<CarTelemetryData> batch, string connectionString, CancellationToken token)
+        {
+            if (batch.Count == 0) return;
+
+            try
+            {
+                using var conn = new MySqlConnection(connectionString);
+                await conn.OpenAsync(token);
+
+                var sb = new StringBuilder();
+                sb.Append(@"
                     INSERT INTO telemetry (
                         speed, throttle, steer, brake, clutch, gear, engineRPM, drs, revLightsPercent, revLightsBitValue,
                         brakesTemperature0, brakesTemperature1, brakesTemperature2, brakesTemperature3,
@@ -92,63 +147,57 @@ namespace Telemtry
                         engineTemperature,
                         tyresPressure0, tyresPressure1, tyresPressure2, tyresPressure3,
                         surfaceType0, surfaceType1, surfaceType2, surfaceType3
-                    ) VALUES (
-                        @speed, @throttle, @steer, @brake, @clutch, @gear, @engineRPM, @drs, @revLightsPercent, @revLightsBitValue,
-                        @brakesTemperature0, @brakesTemperature1, @brakesTemperature2, @brakesTemperature3,
-                        @tyresSurfaceTemperature0, @tyresSurfaceTemperature1, @tyresSurfaceTemperature2, @tyresSurfaceTemperature3,
-                        @tyresInnerTemperature0, @tyresInnerTemperature1, @tyresInnerTemperature2, @tyresInnerTemperature3,
-                        @engineTemperature,
-                        @tyresPressure0, @tyresPressure1, @tyresPressure2, @tyresPressure3,
-                        @surfaceType0, @surfaceType1, @surfaceType2, @surfaceType3
-                    )",
-                    conn);
-                cmd.Parameters.AddWithValue("@speed", data.speed);
-                cmd.Parameters.AddWithValue("@throttle", data.throttle);
-                cmd.Parameters.AddWithValue("@steer", data.steer);
-                cmd.Parameters.AddWithValue("@brake", data.brake);
-                cmd.Parameters.AddWithValue("@clutch", data.clutch);
-                cmd.Parameters.AddWithValue("@gear", data.gear);
-                cmd.Parameters.AddWithValue("@engineRPM", data.engineRPM);
-                cmd.Parameters.AddWithValue("@drs", data.drs);
-                cmd.Parameters.AddWithValue("@revLightsPercent", data.revLightsPercent);
-                cmd.Parameters.AddWithValue("@revLightsBitValue", data.revLightsBitValue);
+                    ) VALUES ");
 
-                // Arrays
-                cmd.Parameters.AddWithValue("@brakesTemperature0", data.brakesTemperature?[0] ?? 0);
-                cmd.Parameters.AddWithValue("@brakesTemperature1", data.brakesTemperature?[1] ?? 0);
-                cmd.Parameters.AddWithValue("@brakesTemperature2", data.brakesTemperature?[2] ?? 0);
-                cmd.Parameters.AddWithValue("@brakesTemperature3", data.brakesTemperature?[3] ?? 0);
-
-                cmd.Parameters.AddWithValue("@tyresSurfaceTemperature0", data.tyresSurfaceTemperature?[0] ?? 0);
-                cmd.Parameters.AddWithValue("@tyresSurfaceTemperature1", data.tyresSurfaceTemperature?[1] ?? 0);
-                cmd.Parameters.AddWithValue("@tyresSurfaceTemperature2", data.tyresSurfaceTemperature?[2] ?? 0);
-                cmd.Parameters.AddWithValue("@tyresSurfaceTemperature3", data.tyresSurfaceTemperature?[3] ?? 0);
-
-                cmd.Parameters.AddWithValue("@tyresInnerTemperature0", data.tyresInnerTemperature?[0] ?? 0);
-                cmd.Parameters.AddWithValue("@tyresInnerTemperature1", data.tyresInnerTemperature?[1] ?? 0);
-                cmd.Parameters.AddWithValue("@tyresInnerTemperature2", data.tyresInnerTemperature?[2] ?? 0);
-                cmd.Parameters.AddWithValue("@tyresInnerTemperature3", data.tyresInnerTemperature?[3] ?? 0);
-
-                cmd.Parameters.AddWithValue("@engineTemperature", data.engineTemperature);
-
-                cmd.Parameters.AddWithValue("@tyresPressure0", data.tyresPressure?[0] ?? 0);
-                cmd.Parameters.AddWithValue("@tyresPressure1", data.tyresPressure?[1] ?? 0);
-                cmd.Parameters.AddWithValue("@tyresPressure2", data.tyresPressure?[2] ?? 0);
-                cmd.Parameters.AddWithValue("@tyresPressure3", data.tyresPressure?[3] ?? 0);
-
-                cmd.Parameters.AddWithValue("@surfaceType0", data.surfaceType?[0] ?? 0);
-                cmd.Parameters.AddWithValue("@surfaceType1", data.surfaceType?[1] ?? 0);
-                cmd.Parameters.AddWithValue("@surfaceType2", data.surfaceType?[2] ?? 0);
-                cmd.Parameters.AddWithValue("@surfaceType3", data.surfaceType?[3] ?? 0);
-
-                try
+                var parameters = new List<MySqlParameter>();
+                for (int i = 0; i < batch.Count; i++)
                 {
-                    await cmd.ExecuteNonQueryAsync();
+                    var d = batch[i];
+                    var row = new StringBuilder("(");
+                    row.Append($"@speed{i}, @throttle{i}, @steer{i}, @brake{i}, @clutch{i}, @gear{i}, @engineRPM{i}, @drs{i}, @revLightsPercent{i}, @revLightsBitValue{i},");
+                    for (int j = 0; j < 4; j++) row.Append($"@brakesTemperature{i}_{j},");
+                    for (int j = 0; j < 4; j++) row.Append($"@tyresSurfaceTemperature{i}_{j},");
+                    for (int j = 0; j < 4; j++) row.Append($"@tyresInnerTemperature{i}_{j},");
+                    row.Append($"@engineTemperature{i},");
+                    for (int j = 0; j < 4; j++) row.Append($"@tyresPressure{i}_{j},");
+                    for (int j = 0; j < 4; j++) row.Append($"@surfaceType{i}_{j},");
+                    row.Length--; // remove last comma
+                    row.Append("),");
+                    sb.Append(row);
+
+                    parameters.AddRange(new[] {
+                new MySqlParameter($"@speed{i}", d.speed),
+                new MySqlParameter($"@throttle{i}", d.throttle),
+                new MySqlParameter($"@steer{i}", d.steer),
+                new MySqlParameter($"@brake{i}", d.brake),
+                new MySqlParameter($"@clutch{i}", d.clutch),
+                new MySqlParameter($"@gear{i}", d.gear),
+                new MySqlParameter($"@engineRPM{i}", d.engineRPM),
+                new MySqlParameter($"@drs{i}", d.drs),
+                new MySqlParameter($"@revLightsPercent{i}", d.revLightsPercent),
+                new MySqlParameter($"@revLightsBitValue{i}", d.revLightsBitValue),
+                new MySqlParameter($"@engineTemperature{i}", d.engineTemperature)
+            });
+
+                    for (int j = 0; j < 4; j++)
+                    {
+                        parameters.Add(new MySqlParameter($"@brakesTemperature{i}_{j}", d.brakesTemperature?[j] ?? 0));
+                        parameters.Add(new MySqlParameter($"@tyresSurfaceTemperature{i}_{j}", d.tyresSurfaceTemperature?[j] ?? 0));
+                        parameters.Add(new MySqlParameter($"@tyresInnerTemperature{i}_{j}", d.tyresInnerTemperature?[j] ?? 0));
+                        parameters.Add(new MySqlParameter($"@tyresPressure{i}_{j}", d.tyresPressure?[j] ?? 0));
+                        parameters.Add(new MySqlParameter($"@surfaceType{i}_{j}", d.surfaceType?[j] ?? 0));
+                    }
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"MySQL Insert Error: {ex.Message}");
-                }
+
+                sb.Length--; // Remove trailing comma
+                using var cmd = new MySqlCommand(sb.ToString(), conn);
+                cmd.Parameters.AddRange(parameters.ToArray());
+
+                await cmd.ExecuteNonQueryAsync(token);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Batch insert error: {ex.Message}");
             }
         }
         private CarTelemetryData ReadCarTelemetryData(BinaryReader br)
